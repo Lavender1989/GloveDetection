@@ -49,8 +49,8 @@ class DetectorWorker(QObject):
         self.view_names = ["视角1", "视角2"]
         # 确保XML路径正确
         self.xml_paths = [
-            os.path.join(os.path.dirname(__file__), "..", "area", "20250829_1_frame00000.xml"), 
-            os.path.join(os.path.dirname(__file__), "..", "area", "20250829_2_frame00000.xml") 
+            os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"), 
+            os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml") 
         ]
     
         # 视频名称和报警邮箱
