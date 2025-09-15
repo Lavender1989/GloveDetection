@@ -62,7 +62,7 @@ class DetectorWorker(QObject):
         self.processed_alert_frame = None
     
         # 直接加载区域配置
-        self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
+        # self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
         # self.log_message.emit(f"已加载 {self.view_names[self.current_view]} 对应的区域配置")
 
     def process_frame(self, frame: np.ndarray):
@@ -86,6 +86,17 @@ class DetectorWorker(QObject):
 
     def _process_frame(self, frame):
         """核心检测逻辑"""
+        # 获取视频帧尺寸
+        h, w = frame.shape[:2]
+        # 检查是否首次处理帧或尺寸发生变化
+        if not hasattr(self, 'width') or not hasattr(self, 'height') or self.width != w or self.height != h:
+            # 设置尺寸属性
+            self.width = w
+            self.height = h
+            # 重新加载并缩放检测区域
+            self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
+            self.log_message.emit(f"已根据视频尺寸 {w}x{h} 重新加载并缩放检测区域")
+        
         # 1. 模型推理
         results = self.model(frame, conf=0.8, verbose=False)[0]
         annotated_frame = frame.copy()
@@ -165,12 +176,16 @@ class DetectorWorker(QObject):
     def load_area_from_xml(self, xml_path):
         """从XML文件加载检测区域"""
         area_boxes = []
+        if not os.path.exists(xml_path):
+            self.log_message.emit(f"XML文件不存在: {xml_path}")
+            return area_boxes
         try:
-            if not os.path.exists(xml_path):
-                self.log_message.emit(f"XML文件不存在: {xml_path}")
-                return area_boxes
             tree = ET.parse(xml_path)
             root = tree.getroot()
+            size_node = root.find("size")
+            xml_w = int(size_node.find("width").text) if size_node is not None and size_node.find("width") is not None else None
+            xml_h = int(size_node.find("height").text) if size_node is not None and size_node.find("height") is not None else None
+            raw_boxes = []
             for obj in root.findall('object'):
                 name = obj.find('name').text
                 if name == 'area':  # 只加载类别为area的区域
@@ -179,11 +194,32 @@ class DetectorWorker(QObject):
                     ymin = int(float(bndbox.find('ymin').text))
                     xmax = int(float(bndbox.find('xmax').text))
                     ymax = int(float(bndbox.find('ymax').text))
-                    area_boxes.append([xmin, ymin, xmax, ymax])
+                    raw_boxes.append([xmin, ymin, xmax, ymax])
             self.log_message.emit(f"成功从 {xml_path} 加载了 {len(area_boxes)} 个检测区域")
+            if not hasattr(self, "width") or not hasattr(self, "height"):
+                print("警告: self.width/self.height 未设置，返回原始坐标（未缩放）")
+                return [[int(xmin), int(ymin), int(xmax), int(ymax)] for xmin, ymin, xmax, ymax in raw_boxes]
+            tw, th = int(self.width), int(self.height)
+            scaled = []
+            if xml_w and xml_h:
+                sx = tw / xml_w
+                sy = th / xml_h
+                for xmin, ymin, xmax, ymax in raw_boxes:
+                    nx1 = int(round(xmin * sx))
+                    ny1 = int(round(ymin * sy))
+                    nx2 = int(round(xmax * sx))
+                    ny2 = int(round(ymax * sy))
+                    # 裁剪到图像范围
+                    nx1 = max(0, min(tw - 1, nx1))
+                    nx2 = max(0, min(tw - 1, nx2))
+                    ny1 = max(0, min(th - 1, ny1))
+                    ny2 = max(0, min(th - 1, ny2))
+                    scaled.append([nx1, ny1, nx2, ny2])
+                self.log_message.emit(f"[XML缩放] {xml_w}x{xml_h} -> {tw}x{th}, boxes={len(scaled)}")
+                return scaled
         except Exception as e:
             self.log_message.emit(f"加载XML文件 {xml_path} 时出错: {e}")
-        return area_boxes
+            return []
 
     def box_fully_contains(self, box1, box2):
         """检查box2是否完全包含在box1内"""
