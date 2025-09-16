@@ -30,7 +30,7 @@ class DetectorWorker(QObject):
     def __init__(self, model_path, video_name, view_index, alert_email, parent=None):
         super().__init__(parent)
         self.model = YOLO(model_path)
-        device = 'cuda' if self.model.device.type == 'cuda' else 'cpu'
+        device = 'cuda'
         self.model.to(device)
         self.log_message.emit(f"模型运行设备: {device}")
         
@@ -195,7 +195,7 @@ class DetectorWorker(QObject):
                     xmax = int(float(bndbox.find('xmax').text))
                     ymax = int(float(bndbox.find('ymax').text))
                     raw_boxes.append([xmin, ymin, xmax, ymax])
-            self.log_message.emit(f"成功从 {xml_path} 加载了 {len(area_boxes)} 个检测区域")
+            self.log_message.emit(f"成功从 {xml_path} 加载了 {len(raw_boxes)} 个检测区域")
             if not hasattr(self, "width") or not hasattr(self, "height"):
                 print("警告: self.width/self.height 未设置，返回原始坐标（未缩放）")
                 return [[int(xmin), int(ymin), int(xmax), int(ymax)] for xmin, ymin, xmax, ymax in raw_boxes]
@@ -270,8 +270,6 @@ class DetectorWorker(QObject):
         status_color = (0, 0, 255) if self.alert_active else (0, 255, 0)
         cv2.putText(frame, f"status: {status_text}", (30, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, status_color, 3)
-        cv2.putText(frame, f"视角: {self.view_names[self.current_view]}", (30, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
         if self.alert_active:
             current_time = time.time()

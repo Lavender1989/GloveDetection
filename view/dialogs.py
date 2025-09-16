@@ -65,13 +65,13 @@ class VideoSourceDialog(QDialog):
         email_layout.addWidget(QLabel("报警邮箱:"))
         self.email_combo = QComboBox()
         # 添加三个管理员邮箱选项
-        self.email_combo.addItem("管理员1 (1907872557@qq.com)", "1907872557@qq.com")
-        self.email_combo.addItem("管理员2 (wqr20011989@163.com)", "wqr20011989@163.com")
-        self.email_combo.addItem("管理员3 (903466339@qq.com)", "903466339@qq.com")
-        # self.email_combo.addItem("管理员2 (Honglingxiang@kaifa.cn)", "Honglingxiang@kaifa.cn")
-        # self.email_combo.addItem("管理员3 (XinHuZhang@kaifa.cn)", "XinHuZhang@kaifa.cn")
-        # self.email_combo.addItem("管理员4 (ShaoHuawang1@kaifa.cn)", "ShaoHuawang1@kaifa.cn")
-        # self.email_combo.addItem("管理员5 (xiaoyuzhong@kaifa.cn)", "xiaoyuzhong@kaifa.cn")
+        # self.email_combo.addItem("管理员1 (1907872557@qq.com)", "1907872557@qq.com")
+        # self.email_combo.addItem("管理员2 (wqr20011989@163.com)", "wqr20011989@163.com")
+        self.email_combo.addItem("管理员1 (903466339@qq.com)", "903466339@qq.com")
+        self.email_combo.addItem("管理员2 (Honglingxiang@kaifa.cn)", "Honglingxiang@kaifa.cn")
+        self.email_combo.addItem("管理员3 (XinHuZhang@kaifa.cn)", "XinHuZhang@kaifa.cn")
+        self.email_combo.addItem("管理员4 (ShaoHuawang1@kaifa.cn)", "ShaoHuawang1@kaifa.cn")
+        self.email_combo.addItem("管理员5 (xiaoyuzhong@kaifa.cn)", "xiaoyuzhong@kaifa.cn")
 
 
 

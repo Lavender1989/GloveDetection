@@ -18,12 +18,12 @@ class EmailSender:
 
         # 三个管理员的邮箱地址（只有在这个列表里的邮箱地址才能收到邮件，需要增加的话，在下面新增就行）
         self.admin_emails = [
-            "1907872557@qq.com",
-            # "Honglingxiang@kaifa.cn",
-            # "XinHuZhang@kaifa.cn",
-            # "ShaoHuawang1@kaifa.cn",
-            # "xiaoyuzhong@kaifa.cn"
-            "wqr20011989@163.com",
+            # "1907872557@qq.com",
+            "Honglingxiang@kaifa.cn",
+            "XinHuZhang@kaifa.cn",
+            "ShaoHuawang1@kaifa.cn",
+            "xiaoyuzhong@kaifa.cn"
+            # "wqr20011989@163.com",
             "903466339@qq.com"
         ]
 

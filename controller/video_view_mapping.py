@@ -27,10 +27,10 @@ def get_view_for_video(video_path):
         ip_match = re.search(r'\b(?:\d{1,3}\.){3}(\d{1,3})\b', video_path)
         if ip_match:
             last_octet = ip_match.group(1)
-            # 102对应视角1, 106对应视角2
-            if last_octet == "102":
+            # 104对应视角1, 102对应视角2
+            if last_octet == "104":
                 return 0
-            elif last_octet == "106":
+            elif last_octet == "102":
                 return 1
         # 默认视角1
         return 0
