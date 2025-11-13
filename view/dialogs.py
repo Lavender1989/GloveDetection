@@ -1,7 +1,9 @@
 import cv2
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QRadioButton, QGroupBox,
-                             QFileDialog, QComboBox, QMessageBox)
+                             QFileDialog, QComboBox, QMessageBox, QListWidget,
+                             QListWidgetItem, QAbstractItemView)
 
 class VideoSourceDialog(QDialog):
     """添加/编辑视频源对话框"""
@@ -60,23 +62,34 @@ class VideoSourceDialog(QDialog):
         path_layout.addWidget(self.browse_btn)
         main_layout.addLayout(path_layout)
 
-        # 4. 邮箱选择（新增）
-        email_layout = QHBoxLayout()
-        email_layout.addWidget(QLabel("报警邮箱:"))
-        self.email_combo = QComboBox()
-        # 添加三个管理员邮箱选项
-        # self.email_combo.addItem("管理员1 (1907872557@qq.com)", "1907872557@qq.com")
-        # self.email_combo.addItem("管理员2 (wqr20011989@163.com)", "wqr20011989@163.com")
-        self.email_combo.addItem("管理员1 (903466339@qq.com)", "903466339@qq.com")
-        self.email_combo.addItem("管理员2 (Honglingxiang@kaifa.cn)", "Honglingxiang@kaifa.cn")
-        self.email_combo.addItem("管理员3 (XinHuZhang@kaifa.cn)", "XinHuZhang@kaifa.cn")
-        self.email_combo.addItem("管理员4 (ShaoHuawang1@kaifa.cn)", "ShaoHuawang1@kaifa.cn")
-        self.email_combo.addItem("管理员5 (xiaoyuzhong@kaifa.cn)", "xiaoyuzhong@kaifa.cn")
-
-
-
-        email_layout.addWidget(self.email_combo)
-        main_layout.addLayout(email_layout)
+        # 4. 邮箱选择（新增）支持多选
+        email_group = QGroupBox("报警邮箱 (可多选)")
+        email_group_layout = QVBoxLayout()
+        
+        # 创建邮箱列表控件
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
+        self.email_list = QListWidget()
+        self.email_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        
+        # 所有可用邮箱列表
+        self.available_emails = [
+            {"name": "管理员1", "email": "903466339@qq.com"},
+            {"name": "管理员2", "email": "Honglingxiang@kaifa.cn"},
+            {"name": "管理员3", "email": "XinHuZhang@kaifa.cn"},
+            {"name": "管理员4", "email": "ShaoHuawang1@kaifa.cn"},
+            {"name": "管理员5", "email": "xiaoyuzhong@kaifa.cn"},
+            {"name": "管理员6", "email": "wqr20011989@163.com"}
+        ]
+        
+        # 添加邮箱到列表
+        for email_info in self.available_emails:
+            item = QListWidgetItem(f"{email_info['name']} ({email_info['email']})")
+            item.setData(Qt.ItemDataRole.UserRole, email_info['email'])
+            self.email_list.addItem(item)
+        
+        email_group_layout.addWidget(self.email_list)
+        email_group.setLayout(email_group_layout)
+        main_layout.addWidget(email_group)
 
         # 5. 底部按钮
         btn_layout = QHBoxLayout()
@@ -107,17 +120,20 @@ class VideoSourceDialog(QDialog):
             self.rtsp_radio.setChecked(True)
         else:
             self.camera_radio.setChecked(True)
-        # 新增：设置邮箱选择
+            
+        # 设置邮箱选择（支持多选）
         if hasattr(self.video_info, 'alert_email') and self.video_info.alert_email:
-            # 查找对应的邮箱索引
-            for index in range(self.email_combo.count()):
-                if self.email_combo.itemData(index) == self.video_info.alert_email:
-                    self.email_combo.setCurrentIndex(index)
-                    break
+            # 将存储的邮箱字符串分割成列表
+            if isinstance(self.video_info.alert_email, str):
+                selected_emails = [email.strip() for email in self.video_info.alert_email.split(',')]
             else:
-                # 如果邮箱不在选项中，添加并选择
-                self.email_combo.addItem(f"自定义: {self.video_info.alert_email}", self.video_info.alert_email)
-                self.email_combo.setCurrentIndex(self.email_combo.count() - 1)
+                selected_emails = [self.video_info.alert_email]
+                
+            # 遍历列表并选中对应的邮箱
+            for i in range(self.email_list.count()):
+                item = self.email_list.item(i)
+                if item.data(Qt.ItemDataRole.UserRole) in selected_emails:
+                    item.setSelected(True)
 
     """视频类型切换处理"""
     def on_type_changed(self, type_id):
@@ -135,12 +151,17 @@ class VideoSourceDialog(QDialog):
         elif self.selected_type == 3:
             self._select_camera()
 
-    """获取选择的邮箱"""
+    """获取选择的邮箱列表（多个邮箱用逗号分隔）"""
     def get_selected_email(self):
-        selected_index = self.email_combo.currentIndex()
-        if selected_index == -1:
-            selected_index = 0
-        return self.email_combo.itemData(selected_index)
+        selected_items = self.email_list.selectedItems()
+        if not selected_items:
+            # 如果没有选择，返回默认的第一个邮箱
+            return self.available_emails[0]['email'] if self.available_emails else ""
+            
+        # 收集所有选中的邮箱
+        selected_emails = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+        # 用逗号分隔存储多个邮箱
+        return ",".join(selected_emails)
 
     """选择本地视频文件"""
     def _select_local_file(self):

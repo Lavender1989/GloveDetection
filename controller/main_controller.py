@@ -243,8 +243,18 @@ class MainController(QObject):
                 "RTSP地址" if video.type == 2 else "本机摄像头"
             item.setText(3, type_text)
 
-            # 新增：设置报警邮箱信息
-            email_text = "所有管理员" if not video.alert_email or video.alert_email == "all" else video.alert_email
+            # 设置报警邮箱信息
+            if not video.alert_email or video.alert_email == "all":
+                email_text = "所有管理员"
+            else:
+                # 处理多个邮箱的显示
+                emails = [email.strip() for email in video.alert_email.split(',')]
+                if len(emails) > 2:
+                    # 如果邮箱数量超过2个，只显示前两个并显示总数
+                    email_text = f"{emails[0]}, {emails[1]} 等共{len(emails)}个"
+                else:
+                    # 直接显示所有邮箱
+                    email_text = ", ".join(emails)
             item.setText(4, email_text)
 
             # 存储视频ID，方便后续操作
