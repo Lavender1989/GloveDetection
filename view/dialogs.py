@@ -4,6 +4,71 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QRadioButton, QGroupBox,
                              QFileDialog, QComboBox, QMessageBox, QListWidget,
                              QListWidgetItem, QAbstractItemView)
+from model.db import Database
+
+class EmailDialog(QDialog):
+    """添加/编辑邮箱对话框"""
+    
+    def __init__(self, parent=None, email_id=None, name="", email=""):
+        super().__init__(parent)
+        self.setWindowTitle("添加新邮箱" if not email_id else "编辑邮箱")
+        self.resize(300, 150)
+        self.email_id = email_id
+        
+        # 初始化UI
+        layout = QVBoxLayout()
+        
+        # 名称输入
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("名称:"))
+        self.name_input = QLineEdit(name)
+        name_layout.addWidget(self.name_input)
+        layout.addLayout(name_layout)
+        
+        # 邮箱输入
+        email_layout = QHBoxLayout()
+        email_layout.addWidget(QLabel("邮箱:"))
+        self.email_input = QLineEdit(email)
+        email_layout.addWidget(self.email_input)
+        layout.addLayout(email_layout)
+        
+        # 底部按钮
+        btn_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("确定")
+        self.cancel_btn = QPushButton("取消")
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def accept(self):
+        """确认按钮处理"""
+        # 简单的邮箱格式验证
+        name = self.name_input.text().strip()
+        email = self.email_input.text().strip()
+        
+        if not name or not email:
+            QMessageBox.warning(self, "警告", "名称和邮箱不能为空")
+            return
+        
+        # 简单的邮箱格式验证
+        if '@' not in email:
+            QMessageBox.warning(self, "警告", "请输入有效的邮箱地址")
+            return
+        
+        super().accept()
+    
+    def get_email_info(self):
+        """返回邮箱信息"""
+        return {
+            "id": self.email_id,
+            "name": self.name_input.text().strip(),
+            "email": self.email_input.text().strip()
+        }
+
 
 class VideoSourceDialog(QDialog):
     """添加/编辑视频源对话框"""
@@ -17,6 +82,7 @@ class VideoSourceDialog(QDialog):
         self.video_info = video_info
         self.scene_id = scene_id
         self.selected_type = 1  # 1:本地文件 2:RTSP 3:摄像头
+        self.db = Database()
 
         self.init_ui()
         self._init_edit_mode()  # 单独拆分编辑模式初始化
@@ -62,32 +128,32 @@ class VideoSourceDialog(QDialog):
         path_layout.addWidget(self.browse_btn)
         main_layout.addLayout(path_layout)
 
-        # 4. 邮箱选择（新增）支持多选
+
+
+        # 5. 邮箱选择（新增）支持多选
         email_group = QGroupBox("报警邮箱 (可多选)")
         email_group_layout = QVBoxLayout()
         
         # 创建邮箱列表控件
-        from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
         self.email_list = QListWidget()
         self.email_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         
-        # 所有可用邮箱列表
-        self.available_emails = [
-            {"name": "管理员1", "email": "903466339@qq.com"},
-            {"name": "管理员2", "email": "Honglingxiang@kaifa.cn"},
-            {"name": "管理员3", "email": "XinHuZhang@kaifa.cn"},
-            {"name": "管理员4", "email": "ShaoHuawang1@kaifa.cn"},
-            {"name": "管理员5", "email": "xiaoyuzhong@kaifa.cn"},
-            {"name": "管理员6", "email": "wqr20011989@163.com"}
-        ]
-        
         # 添加邮箱到列表
-        for email_info in self.available_emails:
-            item = QListWidgetItem(f"{email_info['name']} ({email_info['email']})")
-            item.setData(Qt.ItemDataRole.UserRole, email_info['email'])
-            self.email_list.addItem(item)
+        self._load_emails()
+        
+        # 添加/删除邮箱按钮
+        btn_layout = QHBoxLayout()
+        self.add_email_btn = QPushButton("添加新邮箱")
+        self.add_email_btn.clicked.connect(self._add_new_email)
+        
+        self.delete_email_btn = QPushButton("删除选中邮箱")
+        self.delete_email_btn.clicked.connect(self._delete_email)
+        
+        btn_layout.addWidget(self.add_email_btn)
+        btn_layout.addWidget(self.delete_email_btn)
         
         email_group_layout.addWidget(self.email_list)
+        email_group_layout.addLayout(btn_layout)
         email_group.setLayout(email_group_layout)
         main_layout.addWidget(email_group)
 
@@ -121,6 +187,8 @@ class VideoSourceDialog(QDialog):
         else:
             self.camera_radio.setChecked(True)
             
+
+            
         # 设置邮箱选择（支持多选）
         if hasattr(self.video_info, 'alert_email') and self.video_info.alert_email:
             # 将存储的邮箱字符串分割成列表
@@ -151,12 +219,71 @@ class VideoSourceDialog(QDialog):
         elif self.selected_type == 3:
             self._select_camera()
 
+    def _load_emails(self):
+        """从数据库加载邮箱列表"""
+        self.email_list.clear()
+        emails = self.db.get_all_emails()
+        self.available_emails = [{"id": email.id, "name": email.name, "email": email.email} for email in emails]
+        
+        # 添加邮箱到列表
+        for email_info in self.available_emails:
+            item = QListWidgetItem(f"{email_info['name']} ({email_info['email']})")
+            item.setData(Qt.ItemDataRole.UserRole, email_info['email'])
+            item.setData(Qt.ItemDataRole.UserRole + 1, email_info['id'])  # 存储邮箱ID
+            self.email_list.addItem(item)
+    
+    def _add_new_email(self):
+        """添加新邮箱"""
+        dialog = EmailDialog(self)
+        if dialog.exec():
+            email_info = dialog.get_email_info()
+            
+            # 添加到数据库
+            if self.db.add_email(email_info['name'], email_info['email']):
+                # 重新加载邮箱列表
+                self._load_emails()
+                # 选中新添加的邮箱
+                for i in range(self.email_list.count()):
+                    item = self.email_list.item(i)
+                    if item.data(Qt.ItemDataRole.UserRole) == email_info['email']:
+                        item.setSelected(True)
+            else:
+                QMessageBox.warning(self, "警告", "邮箱已存在或添加失败")
+    
+    def _delete_email(self):
+        """删除选中的邮箱"""
+        selected_items = self.email_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "警告", "请先选择要删除的邮箱")
+            return
+        
+        # 确认删除
+        if QMessageBox.question(self, "确认删除", "确定要删除选中的邮箱吗？", 
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No:
+            return
+        
+        # 删除选中的邮箱
+        for item in selected_items:
+            email_id = item.data(Qt.ItemDataRole.UserRole + 1)
+            if email_id:
+                self.db.delete_email(email_id)
+        
+        # 重新加载邮箱列表
+        self._load_emails()
+        
+        # 如果还有邮箱，默认选中第一个
+        if self.email_list.count() > 0:
+            self.email_list.setCurrentRow(0)
+            self.email_list.item(0).setSelected(True)
+    
     """获取选择的邮箱列表（多个邮箱用逗号分隔）"""
     def get_selected_email(self):
         selected_items = self.email_list.selectedItems()
         if not selected_items:
-            # 如果没有选择，返回默认的第一个邮箱
-            return self.available_emails[0]['email'] if self.available_emails else ""
+            # 如果没有选择，返回空字符串或第一个可用邮箱（如果有）
+            if self.available_emails:
+                return self.available_emails[0]['email']
+            return ""
             
         # 收集所有选中的邮箱
         selected_emails = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
@@ -226,14 +353,15 @@ class VideoSourceDialog(QDialog):
 
     """返回视频源信息,加入数据库"""
     def get_video_info(self):
-        return {
+            return {
             "name": self.name_input.text(),
             "path": self.path_input.text(),
             "type": self.selected_type,
             "scene_id": self.scene_id,
             "is_true": False,
             "is_valid": True,
-            "alert_email": self.get_selected_email()  # 新增邮箱信息
+            "alert_email": self.get_selected_email(),  # 新增邮箱信息
+            "detection_type": 1  # 默认检测类型，现在两个模型都会运行
         }
 
 

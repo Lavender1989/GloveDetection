@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QImage
 from PyQt6.QtWidgets import QTreeWidgetItem, QMessageBox
 
-from model.db import Database, VideoSource
+from model.db import Database, VideoSource, Scene, Email
 from view.dialogs import VideoSourceDialog, SceneDialog
 
 
@@ -20,10 +20,9 @@ class DetectionThread(QThread):
     frame_processed = pyqtSignal(int, QImage)  # 新增信号：帧处理完成
     rtsp_disconnected = pyqtSignal(int)  # 新增：RTSP断流信号，携带video_id
 
-    def __init__(self, video_source, model_path, interval):
+    def __init__(self, video_source, interval):
         super().__init__()
         self.video_source = video_source
-        self.model_path = model_path
         self.running = False  # 线程是否运行
         self.paused = False   # 线程是否暂停
         self.detector = None
@@ -38,7 +37,7 @@ class DetectionThread(QThread):
         self.log_signal.emit(f"开始处理视频: {self.video_source.name}")
 
         try:
-            from .detector_worker import DetectorWorker
+            from .multi_detector_worker import MultiDetectorWorker
             from .video_view_mapping import get_view_for_video, get_view_name
             
             # 日志输出视频类型
@@ -50,10 +49,13 @@ class DetectionThread(QThread):
             view_name = get_view_name(view_index)
             self.log_signal.emit(f"{self.video_source.name}: 成功加载{view_name}")
             
-            self.detector = DetectorWorker(self.model_path,
-                                           self.video_source.name,  # 或改为self.video_source.path
-                                           view_index,  # 直接传递已计算好的视角索引
-                                           self.video_source.alert_email)# 新增：报警邮箱
+            self.detector = MultiDetectorWorker(
+                get_resource_path("../model/glove/best.pt"),  # 手套模型路径
+                get_resource_path("../model/head/best.pt"),   # 头部模型路径
+                self.video_source.name,  # 视频名称
+                view_index,  # 视角索引
+                self.video_source.alert_email  # 报警邮箱
+            )
             self.detector.log_message.connect(self.log_signal)
             self.detector.alert_message.connect(self.alert_signal)
 
@@ -153,7 +155,8 @@ class MainController(QObject):
         self.db = Database()
         self.current_scene_id = None
         self.detection_threads =  {}  # 改为字典存储 {video_id: DetectionThread}
-        self.model_path = get_resource_path("../model/best.pt")
+        self.glove_model_path = get_resource_path("../model/glove/best.pt")
+        self.head_model_path = get_resource_path("../model/head/best.pt")
 
         # 初始化日志模型
         self.log_model = QStandardItemModel()
@@ -318,7 +321,8 @@ class MainController(QObject):
                     scene_id=video_info["scene_id"],
                     type=video_info["type"],
                     is_valid=True,  # 新增：设置有效性
-                    alert_email = video_info["alert_email"]  # 新增：添加报警邮箱
+                    alert_email = video_info["alert_email"],  # 新增：添加报警邮箱
+                    detection_type = 1  # 默认检测类型，现在两个模型都会运行
                 )
 
                 video_id = self.db.add_video_source(video)
@@ -385,7 +389,8 @@ class MainController(QObject):
                     is_valid=True,  # 更新连接状态
                     scene_id=self.current_scene_id,
                     type=updated_info["type"],
-                    alert_email=updated_info["alert_email"]
+                    alert_email=updated_info["alert_email"],
+                    detection_type=1  # 默认检测类型，现在两个模型都会运行
                 )
 
                 if self.db.update_video_source(updated_video):
@@ -432,7 +437,7 @@ class MainController(QObject):
                             thread.resume()
                     else:
                         # 创建新线程
-                        thread = DetectionThread(video, self.model_path, frame_interval)
+                        thread = DetectionThread(video, frame_interval)
                         thread.log_signal.connect(self.log)
                         thread.alert_signal.connect(lambda msg, vid=video.name:
                                                     self.log(f"[报警] {vid}: {msg}"))
@@ -508,7 +513,7 @@ class MainController(QObject):
         # 5. 创建新线程并重连
         try:
             frame_interval = min(5, max(3, len(self.db.get_videos_by_scene(self.current_scene_id)) // 2))
-            new_thread = DetectionThread(video, self.model_path, frame_interval)
+            new_thread = DetectionThread(video, frame_interval)
             # 重新连接信号
             new_thread.log_signal.connect(self.log)
             new_thread.alert_signal.connect(lambda msg, vid=video.name: self.log(f"[报警] {vid}: {msg}"))

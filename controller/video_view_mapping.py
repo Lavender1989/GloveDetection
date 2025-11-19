@@ -17,7 +17,7 @@ def get_view_for_video(video_path):
     Args:
         video_path: 视频文件路径或RTSP地址
     Returns:
-        int: 视角索引 (0表示视角1, 1表示视角2)
+        int: 视角索引 (0表示视角1, 1表示视角2, -1表示未找到对应视角)
     """
     video_name = os.path.basename(video_path)
     
@@ -33,7 +33,7 @@ def get_view_for_video(video_path):
             elif last_octet == "102":
                 return 1
         # 默认视角1
-        return 0
+        return -1
     
     # 本地文件处理 - 使用列表方式判断
     # 检查视频名称是否包含视角1的关键字
@@ -45,12 +45,12 @@ def get_view_for_video(video_path):
         if keyword in video_name:
             return 1
     
-    # 默认视角1
-    return 0
+    # 默认没有视角
+    return -1   
 
 def get_view_name(view_index):
     """获取视角名称"""
     view_names = ["视角1", "视角2"]
     if 0 <= view_index < len(view_names):
         return view_names[view_index]
-    return "未知视角"
+    return "全局视角"

@@ -23,12 +23,13 @@ class DetectorWorker(QObject):
     alert_message = pyqtSignal(str)  # 报警信号
 
     # 报警参数配置
-    ALERT_FRAME_THRESHOLD = 10  # 连续多少帧危险才触发报警
+    ALERT_FRAME_THRESHOLD = 5  # 连续多少帧危险才触发报警（摸头检测需要5帧）
     ALERT_DISPLAY_SECONDS = 5  # 报警持续显示时间（秒）
 
     # 修改 __init__ 方法
-    def __init__(self, model_path, video_name, view_index, alert_email, parent=None):
+    def __init__(self, model_path, video_name, view_index, alert_email, detection_type=1, parent=None):
         super().__init__(parent)
+        self.detection_type = detection_type  # 默认检测类型，现在两个模型都会运行
         self.model = YOLO(model_path)
         device = 'cuda'
         self.model.to(device)
@@ -43,7 +44,7 @@ class DetectorWorker(QObject):
         self.alert_start_time = 0  # 报警开始时间戳
         self.show_ui = True
     
-        # 区域检测相关变量
+        # 区域检测相关变量（仅手套检测使用）
         self.area_boxes = []
         self.current_view = view_index  # 直接使用传入的视角索引
         self.view_names = ["视角1", "视角2"]
@@ -61,9 +62,10 @@ class DetectorWorker(QObject):
         # 保存报警帧
         self.processed_alert_frame = None
     
-        # 直接加载区域配置
-        # self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
-        # self.log_message.emit(f"已加载 {self.view_names[self.current_view]} 对应的区域配置")
+        # 加载检测区域（XML文件）- 仅手套检测需要
+        if self.detection_type == 1:
+            self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
+            self.log_message.emit(f"已加载 {self.view_names[self.current_view]} 对应的区域配置")
 
     def process_frame(self, frame: np.ndarray):
         """主入口：处理帧（线程安全）"""
@@ -93,23 +95,35 @@ class DetectorWorker(QObject):
             # 设置尺寸属性
             self.width = w
             self.height = h
-            # 重新加载并缩放检测区域
-            self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
-            self.log_message.emit(f"已根据视频尺寸 {w}x{h} 重新加载并缩放检测区域")
+            # 仅手套检测需要重新加载并缩放检测区域
+            if self.detection_type == 1:
+                self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
+                self.log_message.emit(f"已根据视频尺寸 {w}x{h} 重新加载并缩放检测区域")
         
         # 1. 模型推理
-        results = self.model(frame, conf=0.8, verbose=False)[0]
+        conf_threshold = 0.5 if self.detection_type == 2 else 0.8  # 摸头检测使用较低的置信度阈值
+        results = self.model(frame, conf=conf_threshold, verbose=False)[0]
         annotated_frame = frame.copy()
         danger_detected = False
-        bare_boxes = []
+        detection_boxes = []
         danger_boxes = []
         detected_area_indices = []  # 记录检测到危险的区域索引
 
         # 2. 提取检测框
         for box, cls in zip(results.boxes.xyxy.cpu().numpy(), results.boxes.cls):
             cls_name = results.names[int(cls)]
-            if cls_name == 'bare':
-                bare_boxes.append(box)
+            conf = float(box.conf) if hasattr(box, 'conf') else 0.9  # 获取置信度
+            
+            # 调试信息：只在首次检测到危险时输出一次
+            # if self.detection_type == 2 and cls_name == 'touch' and self.consecutive_danger_frames == 0:
+            #     self.log_message.emit(f"检测到摸头动作，置信度: {conf:.3f}")
+            
+            if self.detection_type == 1:  # 手套检测
+                if cls_name == 'bare':
+                    detection_boxes.append(box)
+            elif self.detection_type == 2:  # 摸头检测
+                if cls_name == 'touch':  # 摸头检测的类别名称是touch
+                    detection_boxes.append(box)
 
         # 3. 报警状态检查
         current_time = time.time()
@@ -119,46 +133,60 @@ class DetectorWorker(QObject):
             if current_time - self.alert_start_time > self.ALERT_DISPLAY_SECONDS:
                 self.alert_active = False
                 self.consecutive_danger_frames = 0
-                self.log_message.emit(f"报警状态已重置")
+                # 报警状态重置，只在状态变化时输出
             # 直接返回当前帧（报警期间不处理新检测）
-            return self._draw_detections(annotated_frame, bare_boxes, danger_boxes)
+            return self._draw_detections(annotated_frame, detection_boxes, danger_boxes)
 
         # 情况B：正常检测危险
-        # 3.1 判断是否有危险（未戴手套的手完全进入危险区域）
-        for bare_box_idx, bare_box in enumerate(bare_boxes):
-            for area_idx, area_box in enumerate(self.area_boxes):
-                if self.box_fully_contains(area_box, bare_box):
-                    danger_detected = True
-                    danger_boxes.append(bare_box)
-                    detected_area_indices.append(area_idx)
-                    break
+        if self.detection_type == 1:  # 手套检测
+            # 3.1 判断是否有危险（未戴手套的手完全进入危险区域）
+            for detection_box in detection_boxes:
+                for area_idx, area_box in enumerate(self.area_boxes):
+                    if self.box_fully_contains(area_box, detection_box):
+                        danger_detected = True
+                        danger_boxes.append(detection_box)
+                        detected_area_indices.append(area_idx)
+                        break
+        elif self.detection_type == 2:  # 摸头检测
+            # 3.1 摸头检测不需要区域限制，只要有检测框就认为是危险
+            danger_detected = len(detection_boxes) > 0
+            danger_boxes = detection_boxes
 
         # 3.2 记录危险状态
         if danger_detected:
             self.consecutive_danger_frames += 1
-            unique_areas = set(detected_area_indices)
-            area_info = f"区域{', '.join(map(str, unique_areas))}"
-            # self.log_message.emit(f"检测到未佩戴手套 (区域: {area_info}, 连续危险帧: {self.consecutive_danger_frames})")
+            # 只在达到报警阈值前输出关键状态
+            if self.consecutive_danger_frames == 1:
+                if self.detection_type == 1:
+                    unique_areas = set(detected_area_indices)
+                    area_info = f"区域{', '.join(map(str, unique_areas))}"
+                    self.log_message.emit(f"检测到未佩戴手套 (区域: {area_info})")
+                elif self.detection_type == 2:
+                    self.log_message.emit(f"检测到摸头动作")
+            elif self.consecutive_danger_frames == self.ALERT_FRAME_THRESHOLD:
+                self.log_message.emit(f"连续危险帧达到阈值: {self.consecutive_danger_frames}")
         else:
             if self.consecutive_danger_frames > 0:
-                pass
-                # self.log_message.emit(f"未检测到危险，重置连续危险帧计数 (之前计数: {self.consecutive_danger_frames})")
+                self.log_message.emit(f"危险状态解除，重置计数")
             self.consecutive_danger_frames = 0
 
         # 3.3 检查是否满足报警条件
         if self.consecutive_danger_frames >= self.ALERT_FRAME_THRESHOLD and not self.alert_active:
             self.alert_active = True
             self.alert_start_time = current_time
-            alert_msg = "检测到未佩戴手套操作！"
+            if self.detection_type == 1:
+                alert_msg = "检测到未佩戴手套操作！"
+            elif self.detection_type == 2:
+                alert_msg = "检测到摸头动作！"
             self.alert_message.emit(alert_msg)
-            self.log_message.emit(f"[报警] {alert_msg}")
+            # self.log_message.emit(f"[报警] {alert_msg}")
             # 绘制检测结果
-            self.processed_alert_frame = self._draw_detections(annotated_frame, bare_boxes, danger_boxes)
+            self.processed_alert_frame = self._draw_detections(annotated_frame, detection_boxes, danger_boxes)
             # 发送报警邮件
             self.send_alert_email(alert_msg)
             self.consecutive_danger_frames = 0  # 触发报警后重置计数
 
-        return self._draw_detections(annotated_frame, bare_boxes, danger_boxes)
+        return self._draw_detections(annotated_frame, detection_boxes, danger_boxes)
 
     # ---------------------- 辅助方法 ----------------------
     def send_alert_email(self, alert_message):
@@ -243,40 +271,54 @@ class DetectorWorker(QObject):
         self.log_message.emit(f"[{current_time}] {video_name}: 成功加载{view_name}")
         return view_index
 
-    def _draw_detections(self, frame, bare_boxes, danger_boxes):
+    def _draw_detections(self, frame, detection_boxes, danger_boxes):
         """绘制检测结果"""
-        # 绘制区域框
-        for box in self.area_boxes:
-            x1, y1, x2, y2 = map(int, box)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            cv2.putText(frame, "area", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        # 仅手套检测需要绘制区域框
+        if self.detection_type == 1:
+            for box in self.area_boxes:
+                x1, y1, x2, y2 = map(int, box)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.putText(frame, "area", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # 绘制未戴手套框（蓝色）
-        for box in bare_boxes:
+        # 绘制检测框（蓝色）
+        for box in detection_boxes:
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame, "bare", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            if self.detection_type == 1:
+                cv2.putText(frame, "bare", (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            elif self.detection_type == 2:
+                cv2.putText(frame, "touch", (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         # 绘制危险框（红色）
         for box in danger_boxes:
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
             cv2.putText(frame, "DANGER", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         # 显示当前状态和视角
         status_text = "DANGER" if self.alert_active else "SAFE"
         status_color = (0, 0, 255) if self.alert_active else (0, 255, 0)
         cv2.putText(frame, f"status: {status_text}", (30, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, status_color, 3)
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, status_color, 3)
+
+        # 显示检测类型
+        detection_type_text = "Glove Detection" if self.detection_type == 1 else "Head Touch Detection"
+        cv2.putText(frame, f"Type: {detection_type_text}", (30, 90),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
         if self.alert_active:
             current_time = time.time()
             alert_duration = current_time - self.alert_start_time
-            cv2.putText(frame, "ALARM! BARE HANDS DETECTED!", (50, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            cv2.putText(frame, f"Duration: {int(alert_duration)}s", (50, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            if self.detection_type == 1:
+                cv2.putText(frame, "ALARM! BARE HANDS DETECTED!", (50, 130),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+            elif self.detection_type == 2:
+                cv2.putText(frame, "ALARM! HEAD TOUCH DETECTED!", (50, 130),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+            cv2.putText(frame, f"Duration: {int(alert_duration)}s", (50, 170),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         return frame
