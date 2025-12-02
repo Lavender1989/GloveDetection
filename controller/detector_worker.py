@@ -23,7 +23,7 @@ class DetectorWorker(QObject):
     alert_message = pyqtSignal(str)  # 报警信号
 
     # 报警参数配置
-    ALERT_FRAME_THRESHOLD = 5  # 连续多少帧危险才触发报警（摸头检测需要5帧）
+    ALERT_FRAME_THRESHOLD = 2  # 连续多少帧危险才触发报警（摸头检测需要5帧）
     ALERT_DISPLAY_SECONDS = 5  # 报警持续显示时间（秒）
 
     # 修改 __init__ 方法

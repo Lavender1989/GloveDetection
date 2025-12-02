@@ -13,6 +13,7 @@ from PyQt6.QtGui import QImage
 from ultralytics import YOLO
 
 from model.email_sender import EmailSender
+from model.video_buffer_manager import VideoBufferManager
 
 
 class DetectionResult:
@@ -83,6 +84,9 @@ class MultiDetectorWorker(QObject):
         self.email_sender = EmailSender()
         self.processed_alert_frame = None
         
+        # 视频缓冲管理器，用于存储最近30秒的视频帧
+        self.video_buffer = VideoBufferManager(buffer_seconds=30, fps=30)
+        
         # 加载检测区域（XML文件）- 仅手套检测需要
         # 根据视频名称的对应关系决定是否加载区域
         # 使用传入的view_index判断是否有对应关系
@@ -97,6 +101,9 @@ class MultiDetectorWorker(QObject):
 
     def process_frame(self, frame: np.ndarray):
         """主入口：处理帧（线程安全）"""
+        # 将当前帧添加到视频缓冲区
+        self.video_buffer.add_frame(frame)
+        
         self._mutex.lock()
         try:
             annotated_frame = self._process_frame(frame)
@@ -244,9 +251,10 @@ class MultiDetectorWorker(QObject):
             self.alert_message.emit(alert_msg)
             self.log_message.emit(f"[报警] {alert_msg}")
             
-            # 发送报警邮件（使用绘制了检测框的帧）
+            # 保存原始帧（无标注）和绘制了检测框的帧
+            original_frame = frame.copy()  # 保存原始无标注帧
             alert_frame = self._draw_all_detections(frame, all_results, danger_detected, danger_boxes)
-            self._send_alert_email(alert_msg, alert_frame)
+            self._send_alert_email(alert_msg, alert_frame, original_frame)
             
             # 重置计数器
             for key in self.consecutive_danger_frames:
@@ -297,16 +305,47 @@ class MultiDetectorWorker(QObject):
         x3, y3, x4, y4 = inner_box
         return (x3 >= x1) and (y3 >= y1) and (x4 <= x2) and (y4 <= y2)
 
-    def _send_alert_email(self, alert_message: str, frame: np.ndarray):
-        """发送报警邮件"""
+    def _send_alert_email(self, alert_message: str, frame: np.ndarray, original_frame: np.ndarray = None):
+        """发送报警邮件，包含视频缓冲"""
         if self.alert_email and frame is not None:
             import threading
+            
+            # 保存视频缓冲为文件（在报警时）
+            video_path = None
+            try:
+                # 将缓冲区中的帧保存为视频文件
+                video_path = self.video_buffer.save_buffer_as_video(include_timestamp=True)
+                print(f"报警视频已保存: {video_path}")
+            except Exception as e:
+                print(f"保存报警视频时出错: {str(e)}")
+            
             thread = threading.Thread(
-                target=self.email_sender.send_alert_email,
-                args=(self.video_name, alert_message, frame, self.alert_email)
+                target=self._send_alert_email_thread,
+                args=(self.video_name, alert_message, frame, original_frame, video_path)
             )
             thread.daemon = True
             thread.start()
+    
+    def _send_alert_email_thread(self, video_name, alert_message, frame, original_frame, video_path):
+        """邮件发送线程函数，支持发送视频附件"""
+        try:
+            # 调用邮件发送器发送报警邮件
+            self.email_sender.send_alert_email(
+                video_name, 
+                alert_message, 
+                frame, 
+                self.alert_email, 
+                original_frame, 
+                video_path
+            )
+        finally:
+            # 邮件发送完成后，清理临时视频文件
+            if video_path and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                    print(f"已清理临时视频文件: {video_path}")
+                except Exception as e:
+                    print(f"清理临时视频文件时出错: {str(e)}")
 
     def load_area_from_xml(self, xml_path: str) -> List[List[float]]:
         """从XML文件加载检测区域"""

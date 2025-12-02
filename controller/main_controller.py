@@ -38,13 +38,15 @@ class DetectionThread(QThread):
 
         try:
             from .multi_detector_worker import MultiDetectorWorker
-            from .video_view_mapping import get_view_for_video, get_view_name
+            from .video_view_mapping import get_view_for_video, get_view_name, VIEW_1_KEYWORDS
             
             # 日志输出视频类型
             video_type = "RTSP地址" if self.video_source.path.lower().startswith("rtsp://") else "本地文件"
             self.log_signal.emit(f"视频类型: {video_type}")
             
             # 提前确定视角并输出日志
+            self.log_signal.emit(f"视频路径: {self.video_source.path}")
+            self.log_signal.emit(f"是否包含视角1关键字: {self.video_source.path in VIEW_1_KEYWORDS}")
             view_index = get_view_for_video(self.video_source.path)
             view_name = get_view_name(view_index)
             self.log_signal.emit(f"{self.video_source.name}: 成功加载{view_name}")
