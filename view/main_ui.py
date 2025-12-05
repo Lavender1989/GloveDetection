@@ -41,6 +41,9 @@ class Ui_MainWindow(QMainWindow):
         self.deleteScene = QtWidgets.QPushButton(parent=self.centralwidget)
         self.deleteScene.setObjectName("deleteScene")
         self.horizontalLayout.addWidget(self.deleteScene)
+        self.modelSelect = QtWidgets.QPushButton(parent=self.centralwidget)
+        self.modelSelect.setObjectName("modelSelect")
+        self.horizontalLayout.addWidget(self.modelSelect)
         self.verticalLayout.addLayout(self.horizontalLayout)
 
         self.horizontalLayout_2 = QtWidgets.QHBoxLayout()
@@ -114,6 +117,7 @@ class Ui_MainWindow(QMainWindow):
         self.label.setText(_translate("MainWindow", "切换场景："))
         self.addScene.setText(_translate("MainWindow", "添加场景"))
         self.deleteScene.setText(_translate("MainWindow", "删除当前场景"))
+        self.modelSelect.setText(_translate("MainWindow", "模型选择"))
         self.addVideo.setText(_translate("MainWindow", "添加视频来源"))
         self.deleteVideo.setText(_translate("MainWindow", "删除视频来源"))
         self.editVideo.setText(_translate("MainWindow", "编辑视频来源"))

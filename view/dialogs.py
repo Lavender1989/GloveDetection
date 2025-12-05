@@ -1,9 +1,9 @@
 import cv2
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QRadioButton, QGroupBox,
                              QFileDialog, QComboBox, QMessageBox, QListWidget,
-                             QListWidgetItem, QAbstractItemView)
+                             QListWidgetItem, QAbstractItemView, QGridLayout, QCheckBox)
 from model.db import Database
 
 class EmailDialog(QDialog):
@@ -394,3 +394,147 @@ class SceneDialog(QDialog):
 
     def get_scene_name(self):
         return self.name_input.text().strip()
+
+
+class ModelSelectDialog(QDialog):
+    """模型选择对话框"""
+    log_message = pyqtSignal(str)  # 定义日志信号
+    
+    def __init__(self, parent=None, selected_models=None, model_confidence=None, model_thresholds=None):
+        super().__init__(parent)
+        self.setWindowTitle("模型选择")
+        self.resize(400, 400)
+        # 默认选择手套模型
+        self.selected_models = selected_models or ['glove']
+        self.model_confidence = model_confidence or {'glove': 0.8, 'head': 0.8}
+        # 添加报警阈值参数
+        self.model_thresholds = model_thresholds or {'glove': 5, 'head': 3}
+        self.init_ui()
+
+    def init_ui(self):
+        """初始化UI"""
+        layout = QVBoxLayout(self)
+
+        # 模型选择组
+        model_group = QGroupBox("请选择要使用的检测模型:")
+        model_group_layout = QVBoxLayout()
+        model_group.setLayout(model_group_layout)
+
+        # 手套模型
+        self.glove_checkbox = QCheckBox("手套检测 (检测未戴手套)")
+        self.glove_checkbox.setChecked('glove' in self.selected_models)
+        model_group_layout.addWidget(self.glove_checkbox)
+
+        # 头部模型
+        self.head_checkbox = QCheckBox("头部检测 (检测摸头违规行为)")
+        self.head_checkbox.setChecked('head' in self.selected_models)
+        model_group_layout.addWidget(self.head_checkbox)
+
+        layout.addWidget(model_group)
+
+        # 置信度设置
+        confidence_group = QGroupBox("模型置信度设置:")
+        confidence_group_layout = QGridLayout()
+        confidence_group.setLayout(confidence_group_layout)
+
+        # 手套模型置信度
+        confidence_group_layout.addWidget(QLabel("手套检测置信度:"), 0, 0)
+        self.glove_conf_input = QLineEdit(str(self.model_confidence.get('glove', 0.8)))
+        self.glove_conf_input.setPlaceholderText("0.0-1.0")
+        confidence_group_layout.addWidget(self.glove_conf_input, 0, 1)
+
+        # 头部模型置信度
+        confidence_group_layout.addWidget(QLabel("头部检测置信度:"), 1, 0)
+        self.head_conf_input = QLineEdit(str(self.model_confidence.get('head', 0.8)))
+        self.head_conf_input.setPlaceholderText("0.0-1.0")
+        confidence_group_layout.addWidget(self.head_conf_input, 1, 1)
+
+        layout.addWidget(confidence_group)
+
+        # 报警阈值设置
+        threshold_group = QGroupBox("报警阈值设置 (连续检测到危险的帧数):")
+        threshold_group_layout = QGridLayout()
+        threshold_group.setLayout(threshold_group_layout)
+
+        # 手套模型阈值
+        threshold_group_layout.addWidget(QLabel("手套检测报警阈值:"), 0, 0)
+        self.glove_threshold_input = QLineEdit(str(self.model_thresholds.get('glove', 5)))
+        self.glove_threshold_input.setPlaceholderText("1-20")
+        threshold_group_layout.addWidget(self.glove_threshold_input, 0, 1)
+
+        # 头部模型阈值
+        threshold_group_layout.addWidget(QLabel("头部检测报警阈值:"), 1, 0)
+        self.head_threshold_input = QLineEdit(str(self.model_thresholds.get('head', 3)))
+        self.head_threshold_input.setPlaceholderText("1-20")
+        threshold_group_layout.addWidget(self.head_threshold_input, 1, 1)
+
+        layout.addWidget(threshold_group)
+
+        # 按钮布局
+        button_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("确定")
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.ok_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+
+    def get_selected_models(self):
+        """获取选中的模型"""
+        selected = []
+        if self.glove_checkbox.isChecked():
+            selected.append('glove')
+        if self.head_checkbox.isChecked():
+            selected.append('head')
+        self.log_message.emit("selected_models: {}".format(selected))
+        # 验证至少选择一个模型
+        if not selected:
+            QMessageBox.warning(self, "错误", "请至少选择一个检测模型")
+            return None
+
+        # 验证置信度输入
+        try:
+            glove_conf = float(self.glove_conf_input.text().strip())
+            if not 0 <= glove_conf <= 1:
+                QMessageBox.warning(self, "错误", "手套检测置信度必须在0.0-1.0之间")
+                return None
+        except ValueError:
+            QMessageBox.warning(self, "错误", "手套检测置信度必须是有效数字")
+            return None
+
+        try:
+            head_conf = float(self.head_conf_input.text().strip())
+            if not 0 <= head_conf <= 1:
+                QMessageBox.warning(self, "错误", "头部检测置信度必须在0.0-1.0之间")
+                return None
+        except ValueError:
+            QMessageBox.warning(self, "错误", "头部检测置信度必须是有效数字")
+            return None
+
+        # 验证报警阈值
+        try:
+            glove_threshold = int(self.glove_threshold_input.text().strip())
+            if not 1 <= glove_threshold <= 20:
+                QMessageBox.warning(self, "错误", "手套检测报警阈值必须在1-20之间")
+                return None
+        except ValueError:
+            QMessageBox.warning(self, "错误", "手套检测报警阈值必须是有效整数")
+            return None
+
+        try:
+            head_threshold = int(self.head_threshold_input.text().strip())
+            if not 1 <= head_threshold <= 20:
+                QMessageBox.warning(self, "错误", "头部检测报警阈值必须在1-20之间")
+                return None
+        except ValueError:
+            QMessageBox.warning(self, "错误", "头部检测报警阈值必须是有效整数")
+            return None
+
+        return {
+            'models': selected,
+            'glove_confidence': glove_conf,
+            'head_confidence': head_conf,
+            'glove_threshold': glove_threshold,
+            'head_threshold': head_threshold
+        }

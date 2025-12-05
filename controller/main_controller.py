@@ -30,6 +30,31 @@ class DetectionThread(QThread):
         self.interval = interval
         self.cap = None       # 保存视频捕获对象，用于暂停后继续
         self.frame_pos = 0    # 记录当前帧位置（用于文件视频）
+        # 启用的模型和置信度
+        self.enabled_models = {'glove': True, 'head': False}  # 默认只启用手套模型
+        self.model_confidence = {'glove': 0.8, 'head': 0.8}
+        self.model_thresholds = {'glove': 5, 'head': 3}  # 模型报警阈值
+        
+    def update_models(self, enabled_models, model_confidence, model_thresholds):
+        """更新模型配置
+        
+        Args:
+            enabled_models: 启用的模型字典 {model_name: bool}
+            model_confidence: 模型置信度字典 {model_name: float}
+            model_thresholds: 模型报警阈值字典 {model_name: int}
+        """
+        self.enabled_models = enabled_models
+        self.model_confidence = model_confidence
+        self.model_thresholds = model_thresholds
+        self.log_signal.emit(f"已更新模型配置: 启用模型={enabled_models}, 置信度={model_confidence}, 阈值={model_thresholds}")
+        
+        # 如果检测器已初始化，传递更新的配置
+        if self.detector and hasattr(self.detector, 'update_config'):
+            try:
+                self.detector.update_config(enabled_models, model_confidence, model_thresholds)
+                self.log_signal.emit(f"检测器配置更新成功")
+            except Exception as e:
+                self.log_signal.emit(f"更新检测器配置失败: {str(e)}")
 
     def run(self):
         self.running = True
@@ -38,7 +63,7 @@ class DetectionThread(QThread):
 
         try:
             from .multi_detector_worker import MultiDetectorWorker
-            from .video_view_mapping import get_view_for_video, get_view_name, VIEW_1_KEYWORDS
+            from .video_view_mapping import get_view_for_video, get_view_name
             
             # 日志输出视频类型
             video_type = "RTSP地址" if self.video_source.path.lower().startswith("rtsp://") else "本地文件"
@@ -46,18 +71,39 @@ class DetectionThread(QThread):
             
             # 提前确定视角并输出日志
             self.log_signal.emit(f"视频路径: {self.video_source.path}")
-            self.log_signal.emit(f"是否包含视角1关键字: {self.video_source.path in VIEW_1_KEYWORDS}")
             view_index = get_view_for_video(self.video_source.path)
             view_name = get_view_name(view_index)
             self.log_signal.emit(f"{self.video_source.name}: 成功加载{view_name}")
             
+            # 初始化检测器，传递模型配置
+            models_config = {
+                'glove': {
+                    'path': get_resource_path("../model/glove/best.pt"),
+                    'target_classes': ['bare'],
+                    'conf': self.model_confidence.get('glove', 0.8),
+                    'threshold': self.model_thresholds.get('glove', 5),
+                    'frame_threshold': 10,    # 手套需要在区域内持续多少帧才触发（示例）
+                    'trigger_mode': 'area'    # 'area' 表示需要进入指定area；'any' 表示画面任意处
+                },
+                'head': {
+                    'path': get_resource_path("../model/head/best.pt"),
+                    'target_classes': ['touch'],
+                    'conf': self.model_confidence.get('head', 0.8),
+                    'threshold': self.model_thresholds.get('head', 3),
+                    'frame_threshold': 3,     # 摸头持续多少帧触发
+                    'trigger_mode': 'any'     # 摸头在画面任意位置即可触发
+                }
+            }
+
             self.detector = MultiDetectorWorker(
-                get_resource_path("../model/glove/best.pt"),  # 手套模型路径
-                get_resource_path("../model/head/best.pt"),   # 头部模型路径
+                models_config, 
                 self.video_source.name,  # 视频名称
                 view_index,  # 视角索引
-                self.video_source.alert_email  # 报警邮箱
+                self.video_source.alert_email,  # 报警邮箱
             )
+            
+            # 应用初始模型启用状态
+            self.detector.update_config(self.enabled_models, self.model_confidence)
             self.detector.log_message.connect(self.log_signal)
             self.detector.alert_message.connect(self.alert_signal)
 
@@ -157,8 +203,26 @@ class MainController(QObject):
         self.db = Database()
         self.current_scene_id = None
         self.detection_threads =  {}  # 改为字典存储 {video_id: DetectionThread}
-        self.glove_model_path = get_resource_path("../model/glove/best.pt")
-        self.head_model_path = get_resource_path("../model/head/best.pt")
+        # 模型路径配置
+        self.model_paths = {
+            'glove': get_resource_path("../model/glove/best.pt"),  # 手套模型
+            'head': get_resource_path("../model/head/best.pt")    # 头部模型
+        }
+        # 启用的模型
+        self.enabled_models = {
+            'glove': True,
+            'head': False  # 默认不启用头部模型
+        }
+        # 模型置信度
+        self.model_confidence = {
+            'glove': 0.8,
+            'head': 0.8
+        }
+        # 模型报警阈值（连续检测到危险的帧数）
+        self.model_thresholds = {
+            'glove': 5,
+            'head': 3
+        }
 
         # 初始化日志模型
         self.log_model = QStandardItemModel()
@@ -281,6 +345,49 @@ class MainController(QObject):
                     self.load_scenes_to_combobox()
                 else:
                     QMessageBox.warning(self.main_window, "错误", "场景名称已存在")
+
+    def set_selected_models(self, selected_models):
+        """设置选中的模型
+        
+        Args:
+            selected_models: 包含选中模型信息的字典
+        """
+        try:
+            # 更新启用的模型状态
+            self.enabled_models = {
+                'glove': 'glove' in selected_models['models'],
+                'head': 'head' in selected_models['models']
+            }
+            
+            # 更新置信度
+            self.model_confidence = {
+                'glove': selected_models['glove_confidence'],
+                'head': selected_models['head_confidence']
+            }
+            
+            # 更新报警阈值
+            self.model_thresholds = {
+                'glove': selected_models['glove_threshold'],
+                'head': selected_models['head_threshold']
+            }
+            
+            self.log(f"更新模型选择: {selected_models}")
+            # 添加打印配置信息
+            print(f"[模型配置] 启用模型: {self.enabled_models}")
+            print(f"[模型配置] 置信度设置: {self.model_confidence}")
+            
+            # 如果有正在运行的检测线程，更新它们的模型设置
+            for video_id, thread in self.detection_threads.items():
+                if thread and thread.isRunning():
+                    # 在DetectionThread类中实现
+                    if hasattr(thread, 'update_models'):
+                        thread.update_models(self.enabled_models, self.model_confidence, self.model_thresholds)
+            
+            QMessageBox.information(self.main_window, "成功", "模型选择已更新")
+            
+        except Exception as e:
+            self.log(f"更新模型选择失败: {str(e)}", is_error=True)
+            QMessageBox.critical(self.main_window, "错误", f"更新模型选择失败: {str(e)}")
 
     def delete_current_scene(self):
         """删除当前场景"""
@@ -415,6 +522,10 @@ class MainController(QObject):
     def start_detection(self):
         """开始或继续检测选中的视频源"""
         try:
+            # 输出当前模型配置
+            print(f"[模型配置] 启用模型: {self.enabled_models}")
+            print(f"[模型配置] 置信度设置: {self.model_confidence}")
+            
             # 获取当前场景下所有选中的视频
             selected_videos = []
             videos = self.db.get_videos_by_scene(self.current_scene_id)

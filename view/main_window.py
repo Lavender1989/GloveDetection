@@ -3,6 +3,7 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QLabel
 
 from .main_ui import Ui_MainWindow
+from .dialogs import ModelSelectDialog
 
 
 class MainWindow(QMainWindow):
@@ -18,6 +19,7 @@ class MainWindow(QMainWindow):
         self.choose_scene = self.ui.chooseScene
         self.add_scene_btn = self.ui.addScene
         self.delete_scene_btn = self.ui.deleteScene
+        self.model_select_btn = self.ui.modelSelect  # 新增模型选择按钮
         self.add_video_btn = self.ui.addVideo
         self.delete_video_btn = self.ui.deleteVideo
         self.edit_video_btn = self.ui.editVideo
@@ -29,6 +31,9 @@ class MainWindow(QMainWindow):
 
         # 视频标签页管理字典（唯一字典，存储所有标签页信息）
         self.video_tabs = {}  # 格式: {video_id: {'widget': QWidget, 'label': QLabel, 'index': int}}
+        
+        # 连接模型选择按钮事件
+        self.model_select_btn.clicked.connect(self.on_model_select)
 
         # 初始化视频显示标签页
         self.init_video_tabs()
@@ -126,3 +131,29 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         label.setPixmap(pixmap)
+        
+    def on_model_select(self):
+        """处理模型选择按钮点击事件"""
+        if self.controller:
+            # 获取当前的模型选择状态
+            enabled_models = self.controller.enabled_models
+            model_confidence = self.controller.model_confidence
+            model_thresholds = self.controller.model_thresholds
+            
+            # 转换为 ModelSelectDialog 需要的格式
+            current_models = []
+            if enabled_models.get('glove'):
+                current_models.append('glove')
+            if enabled_models.get('head'):
+                current_models.append('head')
+        else:
+            current_models = None
+            model_confidence = None
+            model_thresholds = None
+            
+        dialog = ModelSelectDialog(self, current_models, model_confidence, model_thresholds)
+        # 连接对话框的日志信号
+        if dialog.exec():
+            selected_models = dialog.get_selected_models()
+            if selected_models and self.controller:
+                self.controller.set_selected_models(selected_models)

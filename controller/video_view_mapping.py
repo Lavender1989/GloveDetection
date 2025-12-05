@@ -5,13 +5,22 @@
 import re
 import os
 
+from cv2.gapi import video
+
 # 定义视频名称与视角的映射关系，使用列表存储不同视角对应的关键字
 # 这样后续只需要在列表中添加新的关键字即可
 VIEW_1_KEYWORDS = ['20250829_1', '20250820_1', 
                    'rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/201']
 VIEW_2_KEYWORDS = ['20250829_2', '20250820_2',
                    'rtsp://admin:abc12345@192.168.1.102/cam/realmonitor?channel=1&subtype=0&proto=Private3']
-
+VIEW_3_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/301']
+VIEW_4_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/401']
+VIEW_5_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/501']
+VIEW_6_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/601']
+VIEW_7_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/701']
+VIEW_8_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/901']
+VIEW_9_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/1201']
+VIEW_10_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/1301']
 
 def get_view_for_video(video_path):
     """
@@ -19,7 +28,7 @@ def get_view_for_video(video_path):
     Args:
         video_path: 视频文件路径或RTSP地址
     Returns:
-        int: 视角索引 (0表示视角1, 1表示视角2, -1表示未找到对应视角)
+        int: 视角索引 (0表示视角1, 1表示视角2,... -1表示未找到对应视角)
     """
     video_name = os.path.basename(video_path)
     
@@ -39,6 +48,22 @@ def get_view_for_video(video_path):
             return 0
         elif video_path in VIEW_2_KEYWORDS:
             return 1
+        elif video_path in VIEW_3_KEYWORDS:
+            return 2
+        elif video_path in VIEW_4_KEYWORDS:
+            return 3
+        elif video_path in VIEW_5_KEYWORDS:
+            return 4
+        elif video_path in VIEW_6_KEYWORDS:
+            return 5
+        elif video_path in VIEW_7_KEYWORDS:
+            return 6
+        elif video_path in VIEW_8_KEYWORDS:
+            return 7
+        elif video_path in VIEW_9_KEYWORDS:
+            return 8
+        elif video_path in VIEW_10_KEYWORDS:
+            return 9
         # 默认全局视角
         return -1
     
@@ -57,7 +82,7 @@ def get_view_for_video(video_path):
 
 def get_view_name(view_index):
     """获取视角名称"""
-    view_names = ["视角1", "视角2"]
+    view_names = ["视角1", "视角2", "视角3", "视角4", "视角5", "视角6", "视角7", "视角8", "视角9", "视角10"]
     if 0 <= view_index < len(view_names):
         return view_names[view_index]
     return "全局视角"

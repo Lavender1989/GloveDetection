@@ -1,26 +1,26 @@
 <annotation>
-	<folder>0911_2</folder>
-	<filename>0911_2_frame00000.jpg</filename>
-	<path>D:\detect_video\frames_pic\no_wearing_gloves\0911_2\0911_2_frame00000.jpg</path>
+	<folder>area</folder>
+	<filename>301.png</filename>
+	<path>D:\detect_video\area\301.png</path>
 	<source>
 		<database>Unknown</database>
 	</source>
 	<size>
-		<width>1860</width>
-		<height>1080</height>
+		<width>2510</width>
+		<height>1412</height>
 		<depth>3</depth>
 	</size>
 	<segmented>0</segmented>
 	<object>
 		<name>area</name>
 		<pose>Unspecified</pose>
-		<truncated>0</truncated>
+		<truncated>1</truncated>
 		<difficult>0</difficult>
 		<bndbox>
-			<xmin>768</xmin>
-			<ymin>365</ymin>
-			<xmax>1672</xmax>
-			<ymax>1013</ymax>
+			<xmin>1</xmin>
+			<ymin>621</ymin>
+			<xmax>924</xmax>
+			<ymax>1409</ymax>
 		</bndbox>
 	</object>
 	<object>
@@ -29,10 +29,10 @@
 		<truncated>0</truncated>
 		<difficult>0</difficult>
 		<bndbox>
-			<xmin>527</xmin>
-			<ymin>365</ymin>
-			<xmax>1672</xmax>
-			<ymax>671</ymax>
+			<xmin>898</xmin>
+			<ymin>280</ymin>
+			<xmax>1430</xmax>
+			<ymax>674</ymax>
 		</bndbox>
 	</object>
 </annotation>

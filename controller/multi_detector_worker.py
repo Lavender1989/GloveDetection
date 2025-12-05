@@ -1,16 +1,17 @@
 """
 多模型检测工作类 - 支持同时运行多个YOLO模型进行检测
 """
-
 import time
 import os
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Tuple, Optional
 import cv2
 import numpy as np
-from PyQt6.QtCore import QObject, pyqtSignal, QMutex
+from PyQt6.QtCore import QObject, pyqtSignal, QMutex, QMutexLocker
 from PyQt6.QtGui import QImage
 from ultralytics import YOLO
+from uuid import uuid4
+from datetime import datetime
 
 from model.email_sender import EmailSender
 from model.video_buffer_manager import VideoBufferManager
@@ -22,18 +23,42 @@ class DetectionResult:
         self.detection_type = detection_type  # 'glove' 或 'head'
         self.class_name = class_name  # 'bare' 或 'touch'
         self.confidence = confidence
-        self.bbox = bbox  # [x1, y1, x2, y2]
+        self.bbox = [float(x) for x in bbox]  # [x1, y1, x2, y2]
+    def bbox_equals(self, other_bbox: List[float], tol: float = 1e-3) -> bool:
+        if other_bbox is None or len(other_bbox) != 4:
+            return False
+        return all(abs(float(a) - float(b)) <= tol for a, b in zip(self.bbox, other_bbox))
 
 
 class DetectionModel:
-    """检测模型配置"""
-    def __init__(self, model_path: str, detection_type: str, target_classes: List[str], conf_threshold: float):
+    """包含模型、阈值与触发策略"""
+    def __init__(self,
+                 name: str,
+                 model_path: str,
+                 detection_type: str,
+                 target_classes: List[str],
+                 conf_threshold: float = 0.5,
+                 frame_threshold: int = 2,
+                 trigger_mode: str = "area"):  # trigger_mode: "area" or "any"
+        """
+        name: 模型 key, 如 'glove' / 'head'
+        trigger_mode:
+            - 'area' : 只有 bbox 完全进入 area 区域才计为危险（适合 glove）
+            - 'any'  : 只要检测到就计为危险（适合 touch）
+        """
+        self.name = name
         self.model = YOLO(model_path)
-        device = 'cuda'
-        self.model.to(device)
-        self.detection_type = detection_type  # 'glove' 或 'head'
-        self.target_classes = target_classes  # 需要检测的类别列表
-        self.conf_threshold = conf_threshold  # 置信度阈值
+        # 尝试把模型移到 GPU
+        try:
+            self.model.to('cuda')
+        except Exception:
+            pass
+        self.detection_type = detection_type
+        self.target_classes = target_classes
+        self.conf_threshold = conf_threshold
+        self.frame_threshold = frame_threshold
+        self.trigger_mode = trigger_mode
+        self.enabled = True  # 可由外部配置开关
 
 
 class MultiDetectorWorker(QObject):
@@ -42,42 +67,76 @@ class MultiDetectorWorker(QObject):
     log_message = pyqtSignal(str)  # 日志信号
     alert_message = pyqtSignal(str)  # 报警信号
 
-    # 报警参数配置
-    ALERT_FRAME_THRESHOLD = 5  # 连续多少帧危险才触发报警
-    ALERT_DISPLAY_SECONDS = 5  # 报警持续显示时间（秒）
-
-    def __init__(self, glove_model_path: str, head_model_path: str, video_name: str, 
-                 view_index: int, alert_email: str, parent=None):
+    def __init__(self,
+                 models_config: Dict[str, Dict],
+                 video_name: str,
+                 view_index: int,
+                 alert_email: str,
+                 parent=None):
+        """
+       models_config 形如：
+        {
+            'glove': {
+                'path': 'xxx.pt',
+                'target_classes': ['bare'],
+                'conf': 0.8,
+                'frame_threshold': 10,
+                'trigger_mode': 'area'
+            },
+            'head': {
+                'path': 'yyy.pt',
+                'target_classes': ['touch'],
+                'conf': 0.8,
+                'frame_threshold': 3,
+                'trigger_mode': 'any'
+            }
+        }
+        """
         super().__init__(parent)
-        
-        # 初始化多个检测模型
-        self.models = {
-            'glove': DetectionModel(glove_model_path, 'glove', ['bare'], 0.8),
-            'head': DetectionModel(head_model_path, 'head', ['touch'], 0.5)
-        }
-        
-        self.video_name = video_name
-        self.alert_email = alert_email
-        self.view_index = view_index
-        
-        # 线程安全锁
         self._mutex = QMutex()
+
+        # 初始化模型字典
+        self.models: Dict[str, DetectionModel] = {}
+        for name, cfg in models_config.items():
+            self.models[name] = DetectionModel(
+                name=name,
+                model_path=cfg['path'],
+                detection_type=cfg.get('detection_type', name),
+                target_classes=cfg.get('target_classes', []),
+                conf_threshold=cfg.get('conf', 0.5),
+                frame_threshold=cfg.get('threshold', cfg.get('frame_threshold', 2)),
+                trigger_mode=cfg.get('trigger_mode', 'any')
+            )
+
+        # 运行时可通过UI修改哪些模型启用 (key->bool)
+        self.enabled_models: Dict[str, bool] = {name: True for name in self.models.keys()}
         
-        # 报警控制变量 - 分别跟踪不同类型的检测
-        self.consecutive_danger_frames = {
-            'glove': 0,
-            'head': 0
-        }
+        # 警报与计数
+        self.consecutive_danger_frames: Dict[str, int] = {name: 0 for name in self.models.keys()}
         self.alert_active = False
         self.alert_start_time = 0
+        self.ALERT_DISPLAY_SECONDS = 5  # UI 可覆盖
         self.show_ui = True
+
+        self.video_name = video_name
+        self.view_index = view_index
+        self.alert_email = alert_email
+
         
         # 区域检测相关变量（仅手套检测使用）
         self.area_boxes = []
-        self.view_names = ["视角1", "视角2"]
+        self.view_names = ["视角1", "视角2", "视角3", "视角4", "视角5", "视角6", "视角7", "视角8", "视角9", "视角10"]
         self.xml_paths = [
-            os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"), 
-            os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml") 
+            os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"),  # VIEW_1
+            os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml"), # VIEW_2
+            os.path.join(os.path.dirname(__file__), "..", "area", "301.xml"), # VIEW_3
+            os.path.join(os.path.dirname(__file__), "..", "area", "401.xml"), # VIEW_4
+            os.path.join(os.path.dirname(__file__), "..", "area", "501.xml"), # VIEW_5
+            os.path.join(os.path.dirname(__file__), "..", "area", "601.xml"), # VIEW_6
+            os.path.join(os.path.dirname(__file__), "..", "area", "701.xml"), # VIEW_7
+            os.path.join(os.path.dirname(__file__), "..", "area", "901.xml"), # VIEW_8
+            os.path.join(os.path.dirname(__file__), "..", "area", "1201.xml"), # VIEW_9
+            os.path.join(os.path.dirname(__file__), "..", "area", "1301.xml"), # VIEW_10
         ]
         
         # 邮件发送器
@@ -85,312 +144,400 @@ class MultiDetectorWorker(QObject):
         self.processed_alert_frame = None
         
         # 视频缓冲管理器，用于存储最近30秒的视频帧
+        self.buffer_dir = os.path.join(os.path.dirname(__file__), '..', 'temp_video_buffer')
+        # 确保缓冲目录存在
+        os.makedirs(self.buffer_dir, exist_ok=True)
         self.video_buffer = VideoBufferManager(buffer_seconds=30, fps=30)
         
-        # 加载检测区域（XML文件）- 仅手套检测需要
-        # 根据视频名称的对应关系决定是否加载区域
-        # 使用传入的view_index判断是否有对应关系
-        if self.view_index < len(self.xml_paths) and os.path.exists(self.xml_paths[self.view_index]):
-            self.area_boxes = self.load_area_from_xml(self.xml_paths[self.view_index])
-            self.log_message.emit(f"检测模式：区域检测（视角{self.view_index + 1}）")
-        else:
-            # 没有对应关系或文件不存在，使用全画面检测
-            self.log_message.emit("检测模式：全画面检测（未找到对应区域文件）")
+        # 用于保存当前视频的固定路径
+        self.current_video_path = os.path.join(self.buffer_dir, f'current_video_{self.video_name.replace(" ", "_")}.mp4')
         
-        self.log_message.emit(f"多模型检测器初始化完成 - 手套模型: {glove_model_path}, 头部模型: {head_model_path}")
+        # 记录最后一次保存视频的时间
+        self.last_save_time = time.time()
+        
+        # 尝试加载对应的XML文件
+        self.width = None
+        self.height = None
+        self._load_area_for_view()
+        # 输出真实初始化的模型
+        model_desc = ", ".join([f"{name}: {cfg['path']}" for name, cfg in models_config.items()])
+        self.log_message.emit(f"模型检测初始化完成: {model_desc}")
+    
+    # ---------- 配置/控制接口 ----------
+    def set_model_enabled(self, model_name: str, enable: bool):
+        if model_name in self.models:
+            self.enabled_models[model_name] = bool(enable)
+            # 禁用时清除累积计数，防止后续误触发
+            if not enable:
+                self.consecutive_danger_frames[model_name] = 0
+            self.log_message.emit(f"模型 {model_name} enabled={enable}")
 
+    def update_model_confidence(self, model_name: str, conf: float):
+        if model_name in self.models:
+            self.models[model_name].conf_threshold = conf
+            self.log_message.emit(f"{model_name} conf 更新为 {conf}")
+
+    def update_model_frame_threshold(self, model_name: str, frame_threshold: int):
+        if model_name in self.models:
+            self.models[model_name].frame_threshold = frame_threshold
+            self.log_message.emit(f"{model_name} 连续帧阈值 更新为 {frame_threshold}")
+    def update_config(self, enabled_models, model_confidence, model_thresholds=None):
+        with QMutexLocker(self._mutex):
+            self.enabled_models = enabled_models
+            for k, conf in model_confidence.items():
+                if k in self.models:
+                    self.models[k].conf_threshold = conf
+            # 更新模型阈值
+            if model_thresholds:
+                for k, threshold in model_thresholds.items():
+                    if k in self.models:
+                        self.models[k].frame_threshold = threshold
+
+        message = f"模型配置已更新: 启用模型={enabled_models} | 置信度={model_confidence}"
+        if model_thresholds:
+            message += f" | 阈值={model_thresholds}"
+        self.log_message.emit(message)
+
+
+    # ---------- 加载区域 ----------
+    def _load_area_for_view(self):
+        if 0 <= self.view_index < len(self.xml_paths):
+            xml_path = self.xml_paths[self.view_index]
+            self.log_message.emit(f"加载区域: {xml_path}")
+            self.area_boxes = self.load_area_from_xml(xml_path)
+            self.log_message.emit(f"加载到 {len(self.area_boxes)} 个区域")
+        else:
+            self.area_boxes = []
+            self.log_message.emit("没有对应视角，未加载区域")
+
+    # ---------- 主流程 ----------
     def process_frame(self, frame: np.ndarray):
-        """主入口：处理帧（线程安全）"""
-        # 将当前帧添加到视频缓冲区
         self.video_buffer.add_frame(frame)
+        
+        # 每10秒保存一次视频，使用固定文件名覆盖
+        now = time.time()
+        if now - self.last_save_time >= 10:
+            try:
+                self.video_buffer.save_buffer_as_video(output_path=self.current_video_path, include_timestamp=True)
+                self.log_message.emit(f"定期视频已保存（覆盖）: {self.current_video_path}")
+                self.last_save_time = now
+            except Exception as e:
+                self.log_message.emit(f"定期保存视频失败: {e}")
         
         self._mutex.lock()
         try:
-            annotated_frame = self._process_frame(frame)
-            # 转换并发送处理后的帧
+            out = self._process_frame(frame)
             if self.show_ui:
-                rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_frame.shape
-                q_img = QImage(rgb_frame.data, w, h, ch * w, QImage.Format.Format_RGB888)
-                self.proc_frame_ready.emit(q_img.copy())  # 发送副本避免线程冲突
+                rgb = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                bytes_per_line = ch * w
+                qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                self.proc_frame_ready.emit(qimg.copy())
         except Exception as e:
-            self.log_message.emit(f"帧处理错误: {str(e)}")
             import traceback
-            self.log_message.emit(f"帧处理详细错误: {traceback.format_exc()}")
+            self.log_message.emit(f"process_frame 错误: {e}")
+            self.log_message.emit(traceback.format_exc())
         finally:
             self._mutex.unlock()
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """核心检测逻辑 - 同时运行所有模型"""
-        # 获取视频帧尺寸
         h, w = frame.shape[:2]
-        
-        # 检查是否首次处理帧或尺寸发生变化
-        if not hasattr(self, 'width') or not hasattr(self, 'height') or self.width != w or self.height != h:
-            self.width = w
-            self.height = h
-            self.log_message.emit(f"视频尺寸更新: {w}x{h}")
-        
-        # 运行所有检测模型
-        all_results = {}
-        annotated_frame = frame.copy()
-        
-        for model_name, model_config in self.models.items():
-            results = self._run_single_model(model_config, frame)
-            all_results[model_name] = results
-            
-        # 处理所有检测结果
-        final_frame = self._process_all_results(annotated_frame, all_results)
-        
-        return final_frame
+        size_changed = False
+        if self.width is None or self.height is None:
+            self.width, self.height = w, h
+            size_changed = True
+        elif self.width != w or self.height != h:
+            self.width, self.height = w, h
+            size_changed = True
 
-    def _run_single_model(self, model_config: DetectionModel, frame: np.ndarray) -> List[DetectionResult]:
-        """运行单个模型检测"""
-        results = model_config.model(frame, conf=model_config.conf_threshold, verbose=False)[0]
-        detections = []
-        
-        for box, cls in zip(results.boxes.xyxy.cpu().numpy(), results.boxes.cls):
-            cls_name = results.names[int(cls)]
-            conf = float(box.conf) if hasattr(box, 'conf') else 0.9
-            
-            if cls_name in model_config.target_classes:
-                detection = DetectionResult(
-                    detection_type=model_config.detection_type,
-                    class_name=cls_name,
-                    confidence=conf,
-                    bbox=box.tolist()
-                )
-                detections.append(detection)
-                
-        return detections
+        if size_changed:
+            # 重新加载并缩放区域
+            self._load_area_for_view()
 
+        # 1) 仅对启用模型进行推理
+        all_results: Dict[str, List[DetectionResult]] = self.run_inference(frame)
+
+        # 2) 处理检测结果（根据每个模型的 trigger_mode 应用不同策略）
+        out_frame = self._process_all_results(frame.copy(), all_results)
+        return out_frame
+    
+    def run_inference(self, frame: np.ndarray) -> Dict[str, List[DetectionResult]]:
+        """只对 enabled=True 的模型做推理"""
+        results = {}
+        for name, model_cfg in self.models.items():
+            if not self.enabled_models.get(name, False):
+                results[name] = []
+                continue
+            try:
+                y = model_cfg.model(frame, conf=model_cfg.conf_threshold, verbose=False)[0]
+            except Exception as e:
+                self.log_message.emit(f"{name} 模型推理失败: {e}")
+                results[name] = []
+                continue
+
+            detections = []
+            boxes = y.boxes.xyxy.cpu().numpy() if hasattr(y.boxes, "xyxy") else []
+            confs = y.boxes.conf.cpu().numpy() if hasattr(y.boxes, "conf") else []
+            cls_ids = y.boxes.cls.cpu().numpy() if hasattr(y.boxes, "cls") else []
+
+            for box, conf, cls_id in zip(boxes, confs, cls_ids):
+                cls_name = y.names[int(cls_id)]
+                if cls_name in model_cfg.target_classes:
+                    detections.append(DetectionResult(model_cfg.detection_type, cls_name, float(conf), box.tolist()))
+            results[name] = detections
+        return results
+
+    # ---------- 结果处理与报警 ----------
     def _process_all_results(self, frame: np.ndarray, all_results: Dict[str, List[DetectionResult]]) -> np.ndarray:
-        """处理所有模型的检测结果"""
-        current_time = time.time()
-        
-        # 情况A：如果正在报警中，检查是否应该结束
+        now = time.time()
+
+        # 若处在报警展示期，判断是否结束并直接绘制现有画面（不更新计数）
         if self.alert_active:
-            if current_time - self.alert_start_time > self.ALERT_DISPLAY_SECONDS:
+            if now - self.alert_start_time > self.ALERT_DISPLAY_SECONDS:
                 self.alert_active = False
-                # 重置所有计数器
-                for key in self.consecutive_danger_frames:
-                    self.consecutive_danger_frames[key] = 0
-                self.log_message.emit("报警状态已重置")
-            # 直接返回当前帧（报警期间不处理新检测）
+                # 报警结束后，重置所有计数
+                for k in self.consecutive_danger_frames:
+                    self.consecutive_danger_frames[k] = 0
+                self.log_message.emit("报警已结束，计数已重置")
             return self._draw_all_detections(frame, all_results, {}, {})
-        
-        # 分别处理每种检测结果
-        danger_detected = {
-            'glove': False,
-            'head': False
-        }
-        
-        danger_boxes = {
-            'glove': [],
-            'head': []
-        }
-        
-        # 处理手套检测结果
-        if 'glove' in all_results:
-            glove_results = all_results['glove']
-            glove_danger_boxes = []
-            
-            for detection in glove_results:
-                # 检查是否进入危险区域
-                for area_idx, area_box in enumerate(self.area_boxes):
-                    if self._box_fully_contains(area_box, detection.bbox):
-                        danger_detected['glove'] = True
-                        glove_danger_boxes.append(detection)
-                        break
-                        
-            danger_boxes['glove'] = glove_danger_boxes
-        
-        # 处理头部检测结果
-        if 'head' in all_results:
-            head_results = all_results['head']
-            head_danger_boxes = []
-            
-            for detection in head_results:
-                danger_detected['head'] = True
-                head_danger_boxes.append(detection)
-                
-            danger_boxes['head'] = head_danger_boxes
-        
-        # 更新连续危险帧计数
-        for detection_type in danger_detected:
-            if danger_detected[detection_type]:
-                self.consecutive_danger_frames[detection_type] += 1
-                # 只在首次检测到时输出
-                if self.consecutive_danger_frames[detection_type] == 1:
-                    if detection_type == 'glove':
-                        self.log_message.emit("检测到未佩戴手套")
-                    elif detection_type == 'head':
-                        self.log_message.emit("检测到摸头动作")
-                elif self.consecutive_danger_frames[detection_type] == self.ALERT_FRAME_THRESHOLD:
-                    self.log_message.emit(f"{detection_type}检测连续危险帧达到阈值")
+
+        danger_detected = {k: False for k in self.models.keys()}
+        danger_boxes = {k: [] for k in self.models.keys()}
+
+        # 对每个模型应用对应的触发策略
+        for name, model_cfg in self.models.items():
+            if not self.enabled_models.get(name, False):
+                continue
+            detections = all_results.get(name, []) or []
+
+            if model_cfg.trigger_mode == 'area':
+                # 需要 bbox 完全在某个 area 内才算危险（glove）
+                for det in detections:
+                    for area in self.area_boxes:
+                        if self._box_fully_contains(area, det.bbox):
+                            danger_detected[name] = True
+                            danger_boxes[name].append(det)
+                            break
+            else:  # 'any'
+                if len(detections) > 0:
+                    danger_detected[name] = True
+                    danger_boxes[name].extend(detections)
+
+        # 更新计数，只对启用模型计数
+        for name in self.models.keys():
+            if not self.enabled_models.get(name, False):
+                self.consecutive_danger_frames[name] = 0
+                continue
+            if danger_detected.get(name, False):
+                self.consecutive_danger_frames[name] += 1
+                # logging on first detection
+                if self.consecutive_danger_frames[name] == 1:
+                    self.log_message.emit(f"{name} 首次检测到危险（进入计数）")
+                # log when reach threshold
+                if self.consecutive_danger_frames[name] == self.models[name].frame_threshold:
+                    self.log_message.emit(f"{name} 达到阈值: {self.models[name].frame_threshold} 帧")
             else:
-                if self.consecutive_danger_frames[detection_type] > 0:
-                    self.log_message.emit(f"{detection_type}检测危险状态解除")
-                self.consecutive_danger_frames[detection_type] = 0
-        
-        # 检查是否满足报警条件（任一类型达到阈值）
-        should_alert = any(count >= self.ALERT_FRAME_THRESHOLD for count in self.consecutive_danger_frames.values())
-        
+                if self.consecutive_danger_frames[name] > 0:
+                    self.log_message.emit(f"{name} 危险解除（计数重置）")
+                self.consecutive_danger_frames[name] = 0
+
+        # 检查是否达到任一模型的报警条件（只要任一启用模型达阈值就报警）
+        should_alert = False
+        alert_parts = []
+        for name, model_cfg in self.models.items():
+            if not self.enabled_models.get(name, False):
+                continue
+            if self.consecutive_danger_frames.get(name, 0) >= model_cfg.frame_threshold:
+                should_alert = True
+                # 可展示更友好的消息
+                if name == 'glove':
+                    alert_parts.append("未佩戴手套")
+                elif name == 'head':
+                    alert_parts.append("摸头动作")
+                else:
+                    alert_parts.append(name)
+
         if should_alert and not self.alert_active:
             self.alert_active = True
-            self.alert_start_time = current_time
-            
-            # 构建报警消息
-            alert_parts = []
-            if self.consecutive_danger_frames['glove'] >= self.ALERT_FRAME_THRESHOLD:
-                alert_parts.append("未佩戴手套")
-            if self.consecutive_danger_frames['head'] >= self.ALERT_FRAME_THRESHOLD:
-                alert_parts.append("摸头动作")
-                
+            self.alert_start_time = now
+            self.alert_parts = alert_parts  # 保存报警部分信息
             alert_msg = "检测到" + "和".join(alert_parts) + "！"
             self.alert_message.emit(alert_msg)
             self.log_message.emit(f"[报警] {alert_msg}")
-            
-            # 保存原始帧（无标注）和绘制了检测框的帧
-            original_frame = frame.copy()  # 保存原始无标注帧
-            alert_frame = self._draw_all_detections(frame, all_results, danger_detected, danger_boxes)
-            self._send_alert_email(alert_msg, alert_frame, original_frame)
-            
-            # 重置计数器
-            for key in self.consecutive_danger_frames:
-                self.consecutive_danger_frames[key] = 0
-        
+
+            # 保存帧与视频：使用唯一文件名避免冲突
+            original_frame = frame.copy()
+            alert_frame = self._draw_all_detections(frame.copy(), all_results, danger_detected, danger_boxes)
+
+            # 使用当前保存的视频文件发送邮件
+            tmp_video_path = self.current_video_path
+            if os.path.exists(tmp_video_path):
+                self.log_message.emit(f"使用当前视频发送报警邮件: {tmp_video_path}")
+            else:
+                # 如果当前视频文件不存在，临时保存一个
+                try:
+                    unique_id = uuid4().hex
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    tmp_video_path = self.video_buffer.save_buffer_as_video(output_path=os.path.join(self.buffer_dir, f"alert_{ts}_{unique_id}.mp4"),
+                                                                           include_timestamp=True)
+                    self.log_message.emit(f"临时报警视频已保存: {tmp_video_path}")
+                except Exception as e:
+                    self.log_message.emit(f"保存报警视频失败: {e}")
+                    tmp_video_path = None
+
+            # 异步发送邮件（线程内删除该唯一文件）
+            import threading
+            t = threading.Thread(target=self._send_alert_email_thread,
+                                 args=(self.video_name, alert_msg, alert_frame, original_frame, tmp_video_path))
+            t.daemon = True
+            t.start()
+
+            # 报警后立即重置触发模型的计数，防止连续重复报警
+            for name in self.models.keys():
+                self.consecutive_danger_frames[name] = 0
+
+        # 最终绘制并返回
         return self._draw_all_detections(frame, all_results, danger_detected, danger_boxes)
 
-    def _draw_all_detections(self, frame: np.ndarray, all_results: Dict[str, List[DetectionResult]], 
-                           danger_detected: Dict[str, bool], danger_boxes: Dict[str, List[DetectionResult]]) -> np.ndarray:
-        """绘制所有检测结果"""
-        annotated_frame = frame.copy()
+    def _draw_all_detections(self, frame: np.ndarray, all_results: Dict[str, List[DetectionResult]],
+                             danger_detected: Dict[str, bool], danger_boxes: Dict[str, List[DetectionResult]]) -> np.ndarray:
+        annotated = frame.copy()
+        h, w = annotated.shape[:2]
+        now = time.time()
         
-        # 绘制区域框（仅手套检测）
-        if self.area_boxes:
+        # 直接使用固定字体大小，确保所有视频输出使用完全相同的字号
+        # 不再根据视频分辨率动态调整，避免不同视频字号不一致的问题
+        # 将字体大小设置为更大的值，确保清晰可见
+        font_scale = 1.8  # 统一的大字体大小，适用于所有视频输出
+        
+        # 计算文字位置偏移和线条粗细，保持比例
+        line_thickness = max(2, int(font_scale * 2.5))  # 增加线条粗细
+        text_offset = int(40 * font_scale / 0.8)  # 基于默认0.8字体大小的比例调整，增加垂直偏移
+        text_spacing = int(40 * font_scale / 0.8)  # 基于默认0.8字体大小的比例调整，增加间距
+
+        # 报警提示和倒计时
+        if self.alert_active:
+            # 计算剩余时间
+            remaining_time = max(0, self.ALERT_DISPLAY_SECONDS - (now - self.alert_start_time))
+            countdown_text = f"Alarm: {remaining_time:.1f}s"
+            
+            # 绘制报警消息 - 使用英文避免中文显示问题
+            alert_msg = "ALERT: Abnormal behavior detected!"
+            if hasattr(self, 'alert_parts') and self.alert_parts:
+                # 将中文报警类型转换为英文
+                english_parts = []
+                for part in self.alert_parts:
+                    if part == "未佩戴手套":
+                        english_parts.append("No glove")
+                    elif part == "摸头动作":
+                        english_parts.append("Head touching")
+                    else:
+                        english_parts.append(part)
+                alert_msg = "ALERT: " + " and ".join(english_parts) + " detected!"
+            
+            # 使用默认字体，避免中文显示问题
+            cv2.putText(annotated, alert_msg, (20, text_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), line_thickness)
+            cv2.putText(annotated, countdown_text, (20, text_offset + text_spacing), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), line_thickness)
+        
+        # area 区域绘制（仅当有区域且 glove 启用时绘制）
+        if self.area_boxes and self.enabled_models.get('glove', False):
             for box in self.area_boxes:
                 x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                cv2.putText(annotated_frame, "area", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        
-        # 绘制所有检测结果
-        for model_name, results in all_results.items():
-            color = (255, 0, 0) if model_name == 'glove' else (0, 0, 255)  # 蓝色手套，红色头部
-            label_prefix = "bare" if model_name == 'glove' else "touch"
-            
-            for detection in results:
-                x1, y1, x2, y2 = map(int, detection.bbox)
+                box_thickness = max(1, int(font_scale * 2))
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 255), box_thickness)
+                cv2.putText(annotated, "area", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), line_thickness)
+
+        # 绘制每个启用模型的检测结果
+        for name, detections in all_results.items():
+            if not self.enabled_models.get(name, False):
+                continue
+            # 设置普通检测状态的颜色：glove用蓝色，touch用绿色（不再用红色，避免与danger状态混淆）
+            color = (255, 0, 0) if name == 'glove' else (0, 255, 0)
+            label_prefix = "bare" if name == 'glove' else "touch"
+            for det in detections:
+                x1, y1, x2, y2 = map(int, det.bbox)
+                is_danger = any(d.bbox_equals(det.bbox) for d in danger_boxes.get(name, []))
                 
-                # 危险框用红色，普通框用模型颜色
-                if detection in danger_boxes.get(model_name, []):
-                    box_color = (0, 0, 255)  # 红色表示危险
-                    thickness = 3
+                if is_danger:
+                    # 增强的 danger 框效果
+                    box_color = (0, 0, 255)  # 红色
+                    box_thickness = max(2, int(font_scale * 3))  # 更粗的边框
+                    # 绘制双重边框
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 0, 0), box_thickness)
+                    cv2.rectangle(annotated, (x1+2, y1+2), (x2-2, y2-2), (0, 0, 255), box_thickness-1)
+                    # 危险标签
+                    label = f"DANGER: {label_prefix} ({det.confidence:.2f})"
+                    label_color = (0, 0, 255)
                 else:
+                    # 普通检测框
                     box_color = color
-                    thickness = 2
+                    box_thickness = max(1, int(font_scale * 2))
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, box_thickness)
+                    label = f"{label_prefix}: {det.confidence:.2f}"
+                    label_color = box_color
                 
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, thickness)
-                
-                # 添加标签
-                label = f"{label_prefix}: {detection.confidence:.2f}"
-                cv2.putText(annotated_frame, label, (x1, y1 - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
-        
-        return annotated_frame
+                # 绘制标签
+                cv2.putText(annotated, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, font_scale, label_color, line_thickness)
+
+        return annotated
 
     def _box_fully_contains(self, container_box: List[float], inner_box: List[float]) -> bool:
-        """检查内部框是否完全包含在容器框内"""
-        x1, y1, x2, y2 = container_box
-        x3, y3, x4, y4 = inner_box
+        x1, y1, x2, y2 = [float(x) for x in container_box]
+        x3, y3, x4, y4 = [float(x) for x in inner_box]
         return (x3 >= x1) and (y3 >= y1) and (x4 <= x2) and (y4 <= y2)
 
-    def _send_alert_email(self, alert_message: str, frame: np.ndarray, original_frame: np.ndarray = None):
-        """发送报警邮件，包含视频缓冲"""
-        if self.alert_email and frame is not None:
-            import threading
-            
-            # 保存视频缓冲为文件（在报警时）
-            video_path = None
-            try:
-                # 将缓冲区中的帧保存为视频文件
-                video_path = self.video_buffer.save_buffer_as_video(include_timestamp=True)
-                print(f"报警视频已保存: {video_path}")
-            except Exception as e:
-                print(f"保存报警视频时出错: {str(e)}")
-            
-            thread = threading.Thread(
-                target=self._send_alert_email_thread,
-                args=(self.video_name, alert_message, frame, original_frame, video_path)
-            )
-            thread.daemon = True
-            thread.start()
-    
-    def _send_alert_email_thread(self, video_name, alert_message, frame, original_frame, video_path):
-        """邮件发送线程函数，支持发送视频附件"""
+    # ---------- 邮件线程 ----------
+    def _send_alert_email_thread(self, video_name, alert_message, alert_frame, original_frame, video_path):
         try:
-            # 调用邮件发送器发送报警邮件
-            self.email_sender.send_alert_email(
-                video_name, 
-                alert_message, 
-                frame, 
-                self.alert_email, 
-                original_frame, 
-                video_path
-            )
+            # 这里 email_sender 的签名可能与现有不同，按你的实现调整参数顺序
+            self.email_sender.send_alert_email(video_name, alert_message, alert_frame, self.alert_email, original_frame, video_path)
+        except Exception as e:
+            self.log_message.emit(f"发送报警邮件失败: {e}")
         finally:
-            # 邮件发送完成后，清理临时视频文件
-            if video_path and os.path.exists(video_path):
+            # 只删除临时生成的视频文件，不删除定期保存的当前视频
+            if video_path and os.path.exists(video_path) and not video_path == self.current_video_path:
                 try:
                     os.remove(video_path)
-                    print(f"已清理临时视频文件: {video_path}")
+                    self.log_message.emit(f"已删除临时视频: {video_path}")
                 except Exception as e:
-                    print(f"清理临时视频文件时出错: {str(e)}")
+                    self.log_message.emit(f"删除临时视频失败: {e}")
 
+    # ---------- XML 加载（与原逻辑类似） ----------
     def load_area_from_xml(self, xml_path: str) -> List[List[float]]:
-        """从XML文件加载检测区域"""
         area_boxes = []
         if not os.path.exists(xml_path):
-            self.log_message.emit(f"XML文件不存在: {xml_path}")
+            self.log_message.emit(f"XML不存在: {xml_path}")
             return area_boxes
-        
         try:
             tree = ET.parse(xml_path)
             root = tree.getroot()
-            
             size_node = root.find("size")
             xml_w = int(size_node.find("width").text) if size_node is not None and size_node.find("width") is not None else None
             xml_h = int(size_node.find("height").text) if size_node is not None and size_node.find("height") is not None else None
-            
-            raw_boxes = []
+            raw = []
             for obj in root.findall('object'):
                 name = obj.find('name').text
-                if name == 'area':  # 只加载类别为area的区域
-                    bndbox = obj.find('bndbox')
-                    xmin = int(float(bndbox.find('xmin').text))
-                    ymin = int(float(bndbox.find('ymin').text))
-                    xmax = int(float(bndbox.find('xmax').text))
-                    ymax = int(float(bndbox.find('ymax').text))
-                    raw_boxes.append([xmin, ymin, xmax, ymax])
-            
-            # 缩放区域到当前视频尺寸
-            if not hasattr(self, "width") or not hasattr(self, "height"):
-                return [[int(xmin), int(ymin), int(xmax), int(ymax)] for xmin, ymin, xmax, ymax in raw_boxes]
-            
+                if name == 'area':
+                    bnd = obj.find('bndbox')
+                    xmin = int(float(bnd.find('xmin').text))
+                    ymin = int(float(bnd.find('ymin').text))
+                    xmax = int(float(bnd.find('xmax').text))
+                    ymax = int(float(bnd.find('ymax').text))
+                    raw.append([xmin, ymin, xmax, ymax])
+            # 缩放
+            if self.width is None or self.height is None:
+                return [[int(x1), int(y1), int(x2), int(y2)] for x1, y1, x2, y2 in raw]
             tw, th = int(self.width), int(self.height)
             if xml_w and xml_h:
                 sx = tw / xml_w
                 sy = th / xml_h
-                for xmin, ymin, xmax, ymax in raw_boxes:
-                    nx1 = max(0, min(tw - 1, int(round(xmin * sx))))
-                    ny1 = max(0, min(th - 1, int(round(ymin * sy))))
-                    nx2 = max(0, min(tw - 1, int(round(xmax * sx))))
-                    ny2 = max(0, min(th - 1, int(round(ymax * sy))))
+                for x1, y1, x2, y2 in raw:
+                    nx1 = max(0, min(tw - 1, int(round(x1 * sx))))
+                    ny1 = max(0, min(th - 1, int(round(y1 * sy))))
+                    nx2 = max(0, min(tw - 1, int(round(x2 * sx))))
+                    ny2 = max(0, min(th - 1, int(round(y2 * sy))))
                     area_boxes.append([nx1, ny1, nx2, ny2])
-            
-            self.log_message.emit(f"已加载 {len(area_boxes)} 个检测区域")
             return area_boxes
-            
         except Exception as e:
-            self.log_message.emit(f"加载XML文件 {xml_path} 时出错: {e}")
+            self.log_message.emit(f"解析 XML 失败: {e}")
             return []

@@ -1,0 +1,26 @@
+<annotation>
+	<folder>area</folder>
+	<filename>701.png</filename>
+	<path>D:\detect_video\area\701.png</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>2510</width>
+		<height>1412</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>area</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>787</xmin>
+			<ymin>461</ymin>
+			<xmax>1982</xmax>
+			<ymax>1283</ymax>
+		</bndbox>
+	</object>
+</annotation>
