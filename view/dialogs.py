@@ -134,6 +134,15 @@ class VideoSourceDialog(QDialog):
         email_group = QGroupBox("报警邮箱 (可多选)")
         email_group_layout = QVBoxLayout()
         
+        # 添加全选复选框
+        select_all_layout = QHBoxLayout()
+        self.select_all_checkbox = QCheckBox("全选")
+        # 使用更直接的clicked信号
+        self.select_all_checkbox.clicked.connect(self.on_select_all_clicked)
+        select_all_layout.addWidget(self.select_all_checkbox)
+        select_all_layout.addStretch()
+        email_group_layout.addLayout(select_all_layout)
+        
         # 创建邮箱列表控件
         self.email_list = QListWidget()
         self.email_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
@@ -219,6 +228,14 @@ class VideoSourceDialog(QDialog):
         elif self.selected_type == 3:
             self._select_camera()
 
+    def on_select_all_clicked(self):
+        """处理全选复选框点击事件"""
+        # 使用checked属性来判断当前状态
+        is_checked = self.select_all_checkbox.isChecked()
+        for i in range(self.email_list.count()):
+            item = self.email_list.item(i)
+            item.setSelected(is_checked)
+    
     def _load_emails(self):
         """从数据库加载邮箱列表"""
         self.email_list.clear()
