@@ -2,10 +2,8 @@
 存储视频/监控与视角的对应关系
 """
 
-import re
 import os
-
-from cv2.gapi import video
+import xml.etree.ElementTree as ET
 
 # 定义视频名称与视角的映射关系，使用列表存储不同视角对应的关键字
 # 这样后续只需要在列表中添加新的关键字即可
@@ -86,6 +84,70 @@ def get_view_name(view_index):
     if 0 <= view_index < len(view_names):
         return view_names[view_index]
     return "全局视角"
+
+
+def view2xml(view_index, width=None, height=None):
+    xml_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"),  # VIEW_1
+        os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml"), # VIEW_2
+        os.path.join(os.path.dirname(__file__), "..", "area", "301.xml"), # VIEW_3
+        os.path.join(os.path.dirname(__file__), "..", "area", "401.xml"), # VIEW_4
+        os.path.join(os.path.dirname(__file__), "..", "area", "501.xml"), # VIEW_5
+        os.path.join(os.path.dirname(__file__), "..", "area", "601.xml"), # VIEW_6
+        os.path.join(os.path.dirname(__file__), "..", "area", "701.xml"), # VIEW_7
+        os.path.join(os.path.dirname(__file__), "..", "area", "901.xml"), # VIEW_8
+        os.path.join(os.path.dirname(__file__), "..", "area", "1201.xml"), # VIEW_9
+        os.path.join(os.path.dirname(__file__), "..", "area", "1301.xml"), # VIEW_10
+        ]
+    if 0 <= view_index < len(xml_paths):
+        xml_path = xml_paths[view_index]
+        # 先记录加载信息
+        load_message = f"加载区域: {xml_path}"
+        area_boxes = load_area_from_xml(xml_path, width, height)
+        log_message = f"{load_message}，加载到 {len(area_boxes)} 个区域"
+    else:
+        area_boxes = []
+        log_message= "没有对应视角，未加载区域"
+    return area_boxes, log_message
+
+def load_area_from_xml(xml_path, width=None, height=None):
+    area_boxes = []
+    if not os.path.exists(xml_path):
+        # 返回空列表
+        return area_boxes
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        size_node = root.find("size")
+        xml_w = int(size_node.find("width").text) if size_node is not None and size_node.find("width") is not None else None
+        xml_h = int(size_node.find("height").text) if size_node is not None and size_node.find("height") is not None else None
+        raw = []
+        for obj in root.findall('object'):
+            name = obj.find('name').text
+            if name == 'area':
+                bnd = obj.find('bndbox')
+                xmin = int(float(bnd.find('xmin').text))
+                ymin = int(float(bnd.find('ymin').text))
+                xmax = int(float(bnd.find('xmax').text))
+                ymax = int(float(bnd.find('ymax').text))
+                raw.append([xmin, ymin, xmax, ymax])
+        # 缩放
+        if width is None or height is None:
+            return [[int(x1), int(y1), int(x2), int(y2)] for x1, y1, x2, y2 in raw]
+        tw, th = int(width), int(height)
+        if xml_w and xml_h:
+            sx = tw / xml_w
+            sy = th / xml_h
+            for x1, y1, x2, y2 in raw:
+                nx1 = max(0, min(tw - 1, int(round(x1 * sx))))
+                ny1 = max(0, min(th - 1, int(round(y1 * sy))))
+                nx2 = max(0, min(tw - 1, int(round(x2 * sx))))
+                ny2 = max(0, min(th - 1, int(round(y2 * sy))))
+                area_boxes.append([nx1, ny1, nx2, ny2])
+        return area_boxes
+    except Exception as e:
+        # 解析失败时返回空列表
+        return []
 
 if __name__ == "__main__":
     video_path = 'rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/201'

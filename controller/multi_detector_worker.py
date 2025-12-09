@@ -4,7 +4,7 @@
 import time
 import os
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 import cv2
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal, QMutex, QMutexLocker
@@ -15,6 +15,7 @@ from datetime import datetime
 
 from model.email_sender import EmailSender
 from model.video_buffer_manager import VideoBufferManager
+from controller.video_view_mapping import load_area_from_xml, view2xml
 
 
 class DetectionResult:
@@ -94,6 +95,10 @@ class MultiDetectorWorker(QObject):
         """
         super().__init__(parent)
         self._mutex = QMutex()
+        
+        # 新增：用于防止重复报警的变量
+        self.last_alert_boxes = {}  # 存储上次报警的检测框，格式：{model_name: [bbox]}
+        self.last_alert_time = 0  # 上次报警的时间戳
 
         # 初始化模型字典
         self.models: Dict[str, DetectionModel] = {}
@@ -125,25 +130,26 @@ class MultiDetectorWorker(QObject):
         
         # 区域检测相关变量（仅手套检测使用）
         self.area_boxes = []
-        self.view_names = ["视角1", "视角2", "视角3", "视角4", "视角5", "视角6", "视角7", "视角8", "视角9", "视角10"]
-        self.xml_paths = [
-            os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"),  # VIEW_1
-            os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml"), # VIEW_2
-            os.path.join(os.path.dirname(__file__), "..", "area", "301.xml"), # VIEW_3
-            os.path.join(os.path.dirname(__file__), "..", "area", "401.xml"), # VIEW_4
-            os.path.join(os.path.dirname(__file__), "..", "area", "501.xml"), # VIEW_5
-            os.path.join(os.path.dirname(__file__), "..", "area", "601.xml"), # VIEW_6
-            os.path.join(os.path.dirname(__file__), "..", "area", "701.xml"), # VIEW_7
-            os.path.join(os.path.dirname(__file__), "..", "area", "901.xml"), # VIEW_8
-            os.path.join(os.path.dirname(__file__), "..", "area", "1201.xml"), # VIEW_9
-            os.path.join(os.path.dirname(__file__), "..", "area", "1301.xml"), # VIEW_10
-        ]
+        # 移动到video_view_mapping中
+        # self.view_names = ["视角1", "视角2", "视角3", "视角4", "视角5", "视角6", "视角7", "视角8", "视角9", "视角10"]
+        # self.xml_paths = [
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "0911_1_frame00000.xml"),  # VIEW_1
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "0911_2_frame00000.xml"), # VIEW_2
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "301.xml"), # VIEW_3
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "401.xml"), # VIEW_4
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "501.xml"), # VIEW_5
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "601.xml"), # VIEW_6
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "701.xml"), # VIEW_7
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "901.xml"), # VIEW_8
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "1201.xml"), # VIEW_9
+        #     os.path.join(os.path.dirname(__file__), "..", "area", "1301.xml"), # VIEW_10
+        # ]
         
         # 邮件发送器
         self.email_sender = EmailSender()
         self.processed_alert_frame = None
         
-        # 视频缓冲管理器，用于存储最近30秒的视频帧
+        # 视频缓冲管理器，用于存储最近30秒的视频帧 (但是一直没办法缓存到真实30s)
         self.buffer_dir = os.path.join(os.path.dirname(__file__), '..', 'temp_video_buffer')
         # 确保缓冲目录存在
         os.makedirs(self.buffer_dir, exist_ok=True)
@@ -158,7 +164,7 @@ class MultiDetectorWorker(QObject):
         # 尝试加载对应的XML文件
         self.width = None
         self.height = None
-        self._load_area_for_view()
+        # self._load_area_for_view()
         # 输出真实初始化的模型
         model_desc = ", ".join([f"{name}: {cfg['path']}" for name, cfg in models_config.items()])
         self.log_message.emit(f"模型检测初始化完成: {model_desc}")
@@ -242,17 +248,14 @@ class MultiDetectorWorker(QObject):
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         h, w = frame.shape[:2]
-        size_changed = False
-        if self.width is None or self.height is None:
-            self.width, self.height = w, h
-            size_changed = True
-        elif self.width != w or self.height != h:
-            self.width, self.height = w, h
-            size_changed = True
-
-        if size_changed:
-            # 重新加载并缩放区域
-            self._load_area_for_view()
+        self.width, self.height = w, h
+        
+        # 仅在首次处理帧时加载和缩放区域
+        if not hasattr(self, 'area_loaded') or not self.area_loaded:
+            # 处理完第一帧后加载area区域
+            self.area_boxes, log_message = view2xml(self.view_index, self.width, self.height)
+            self.log_message.emit(log_message)
+            self.area_loaded = True
 
         # 1) 仅对启用模型进行推理
         all_results: Dict[str, List[DetectionResult]] = self.run_inference(frame)
@@ -266,6 +269,7 @@ class MultiDetectorWorker(QObject):
         results = {}
         for name, model_cfg in self.models.items():
             if not self.enabled_models.get(name, False):
+                # self.log_message.emit(f"{name} 模型未启用")
                 results[name] = []
                 continue
             try:
@@ -280,10 +284,16 @@ class MultiDetectorWorker(QObject):
             confs = y.boxes.conf.cpu().numpy() if hasattr(y.boxes, "conf") else []
             cls_ids = y.boxes.cls.cpu().numpy() if hasattr(y.boxes, "cls") else []
 
+            # # 调试日志：记录检测到的所有类
+            # all_cls_names = [y.names[int(cls_id)] for cls_id in cls_ids]
+            # self.log_message.emit(f"{name} 模型检测到的所有类: {all_cls_names}")
+            # self.log_message.emit(f"{name} 模型的目标类: {model_cfg.target_classes}")
+
             for box, conf, cls_id in zip(boxes, confs, cls_ids):
                 cls_name = y.names[int(cls_id)]
                 if cls_name in model_cfg.target_classes:
                     detections.append(DetectionResult(model_cfg.detection_type, cls_name, float(conf), box.tolist()))
+            # self.log_message.emit(f"{name} 模型筛选后的检测结果数量: {len(detections)}")
             results[name] = detections
         return results
 
@@ -358,46 +368,149 @@ class MultiDetectorWorker(QObject):
                     alert_parts.append(name)
 
         if should_alert and not self.alert_active:
-            self.alert_active = True
-            self.alert_start_time = now
-            self.alert_parts = alert_parts  # 保存报警部分信息
-            alert_msg = "检测到" + "和".join(alert_parts) + "！"
-            self.alert_message.emit(alert_msg)
-            self.log_message.emit(f"[报警] {alert_msg}")
+            # 检查是否需要触发新报警：计算当前报警框与上次报警框的相似度
+            need_new_alert = False
+            current_alert_boxes = {}
+            
+            # 收集当前所有报警框
+            for name in self.models.keys():
+                if not self.enabled_models.get(name, False):
+                    continue
+                if self.consecutive_danger_frames.get(name, 0) >= self.models[name].frame_threshold:
+                    current_alert_boxes[name] = danger_boxes.get(name, [])
+            
+            # 判断是否需要触发新报警
+            if not self.last_alert_boxes:  # 第一次报警，直接触发
+                need_new_alert = True
+                self.log_message.emit(f"[报警] 首次报警触发，记录报警框信息")
+            else:
+                self.log_message.emit(f"[报警相似度] 开始计算当前报警与上次报警的相似度")
+                # 检查每个模型的报警框
+                for model_name, current_boxes in current_alert_boxes.items():
+                    last_boxes = self.last_alert_boxes.get(model_name, [])
+                    if not last_boxes or not current_boxes:
+                        need_new_alert = True
+                        self.log_message.emit(f"[报警相似度] 模型: {model_name}, 上次或当前无报警框，触发新报警")
+                        break
+                    
+                    # 计算相似度最高的框
+                    max_iou = 0.0
+                    for current_box in current_boxes:
+                        for last_box in last_boxes:
+                            iou = self._calculate_iou(current_box.bbox, last_box.bbox)
+                            # 输出前后两次报警框的相似度
+                            self.log_message.emit(f"[报警相似度] 模型: {model_name}, 当前框: {current_box.bbox}, 上次框: {last_box.bbox}, 相似度: {iou:.2f}")
+                            if iou > max_iou:
+                                max_iou = iou
+                    
+                    # 记录最大相似度
+                    self.log_message.emit(f"[报警相似度] 模型: {model_name}, 最高相似度: {max_iou:.2f}")
+                    
+                    # 如果相似度低于50%，触发新报警
+                    if max_iou < 0.5:
+                        need_new_alert = True
+                        self.log_message.emit(f"[报警相似度] 模型: {model_name}, 相似度低于50%，触发新报警")
+                        break
+                    else:
+                        self.log_message.emit(f"[报警相似度] 模型: {model_name}, 相似度高于50%，不触发新报警")
+            
+            # 如果需要触发新报警
+            if need_new_alert:
+                self.alert_active = True
+                self.alert_start_time = now
+                self.alert_parts = alert_parts  # 保存报警部分信息
+                alert_msg = "检测到" + "和".join(alert_parts) + "！"
+                self.alert_message.emit(alert_msg)
+                self.log_message.emit(f"[报警] {alert_msg}")
+                
+                # 更新上次报警信息
+                self.last_alert_boxes = {}
+                for model_name, boxes in current_alert_boxes.items():
+                    self.last_alert_boxes[model_name] = boxes.copy()
+                self.last_alert_time = now
 
             # 保存帧与视频：使用唯一文件名避免冲突
             original_frame = frame.copy()
             alert_frame = self._draw_all_detections(frame.copy(), all_results, danger_detected, danger_boxes)
-
-            # 使用当前保存的视频文件发送邮件
-            tmp_video_path = self.current_video_path
-            if os.path.exists(tmp_video_path):
-                self.log_message.emit(f"使用当前视频发送报警邮件: {tmp_video_path}")
-            else:
-                # 如果当前视频文件不存在，临时保存一个
+            
+            # 只有当需要触发新报警时，才保存图片、发送邮件并重置计数
+            if need_new_alert:
+                # 保存对比图片到专门文件夹
                 try:
+                    # 创建报警图片保存文件夹
+                    alert_images_dir = os.path.join(os.path.dirname(__file__), '..', 'alert_images')
+                    os.makedirs(alert_images_dir, exist_ok=True)
+                    
+                    # 生成唯一ID
                     unique_id = uuid4().hex
                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    tmp_video_path = self.video_buffer.save_buffer_as_video(output_path=os.path.join(self.buffer_dir, f"alert_{ts}_{unique_id}.mp4"),
-                                                                           include_timestamp=True)
-                    self.log_message.emit(f"临时报警视频已保存: {tmp_video_path}")
+                    
+                    # 保存原始图片和带标注的报警图片
+                    original_path = os.path.join(alert_images_dir, f"alert_{ts}_{unique_id}_original.jpg")
+                    annotated_path = os.path.join(alert_images_dir, f"alert_{ts}_{unique_id}_annotated.jpg")
+                    
+                    cv2.imwrite(original_path, original_frame)
+                    cv2.imwrite(annotated_path, alert_frame)
+                    
+                    self.log_message.emit(f"报警对比图片已保存: {original_path} 和 {annotated_path}")
                 except Exception as e:
-                    self.log_message.emit(f"保存报警视频失败: {e}")
-                    tmp_video_path = None
+                    self.log_message.emit(f"保存报警图片失败: {e}")
 
-            # 异步发送邮件（线程内删除该唯一文件）
-            import threading
-            t = threading.Thread(target=self._send_alert_email_thread,
-                                 args=(self.video_name, alert_msg, alert_frame, original_frame, tmp_video_path))
-            t.daemon = True
-            t.start()
+                # 使用当前保存的视频文件发送邮件
+                tmp_video_path = self.current_video_path
+                if os.path.exists(tmp_video_path):
+                    self.log_message.emit(f"使用当前视频发送报警邮件: {tmp_video_path}")
+                else:
+                    # 如果当前视频文件不存在，临时保存一个
+                    try:
+                        unique_id = uuid4().hex
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        tmp_video_path = self.video_buffer.save_buffer_as_video(output_path=os.path.join(self.buffer_dir, f"alert_{ts}_{unique_id}.mp4"),
+                                                                           include_timestamp=True)
+                        self.log_message.emit(f"临时报警视频已保存: {tmp_video_path}")
+                    except Exception as e:
+                        self.log_message.emit(f"保存报警视频失败: {e}")
+                        tmp_video_path = None
 
-            # 报警后立即重置触发模型的计数，防止连续重复报警
-            for name in self.models.keys():
-                self.consecutive_danger_frames[name] = 0
+                # 异步发送邮件（线程内删除该唯一文件）
+                import threading
+                t = threading.Thread(target=self._send_alert_email_thread,
+                                     args=(self.video_name, alert_msg, alert_frame, original_frame, tmp_video_path))
+                t.daemon = True
+                t.start()
+
+                # 报警后立即重置触发模型的计数，防止连续重复报警
+                for name in self.models.keys():
+                    self.consecutive_danger_frames[name] = 0
 
         # 最终绘制并返回
         return self._draw_all_detections(frame, all_results, danger_detected, danger_boxes)
+    
+    def _calculate_iou(self, box1: List[float], box2: List[float]) -> float:
+        """
+        计算两个检测框的IOU（交并比）
+        box1, box2: [x1, y1, x2, y2]
+        """
+        # 计算交集坐标
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        
+        # 计算交集面积
+        intersection_area = max(0, x2 - x1) * max(0, y2 - y1)
+        
+        # 计算两个框的面积
+        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        
+        # 计算并集面积
+        union_area = box1_area + box2_area - intersection_area
+        
+        # 计算IOU
+        if union_area == 0:
+            return 0.0
+        return intersection_area / union_area
 
     def _draw_all_detections(self, frame: np.ndarray, all_results: Dict[str, List[DetectionResult]],
                              danger_detected: Dict[str, bool], danger_boxes: Dict[str, List[DetectionResult]]) -> np.ndarray:

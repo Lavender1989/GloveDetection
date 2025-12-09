@@ -6,6 +6,7 @@
 
 # controller
 - detector_worker.py 是最近一版的检测器，其他后缀都是以前的检测器
+- multi_detector_worker.py 是多模型检测器，当前有两个模型的权重
 - main_controller.py 处理线程
 - video_view_mapping.py 定义不同视角(监控，本地视频对应哪个检测区域,)，每次采集新的视频数据可以在这里增加
 -test_video_view_mapping.py 主要是测试视角关系对应是否正确

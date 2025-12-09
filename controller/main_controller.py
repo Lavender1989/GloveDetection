@@ -31,7 +31,7 @@ class DetectionThread(QThread):
         self.cap = None       # 保存视频捕获对象，用于暂停后继续
         self.frame_pos = 0    # 记录当前帧位置（用于文件视频）
         # 启用的模型和置信度
-        self.enabled_models = {'glove': True, 'head': False}  # 默认只启用手套模型
+        self.enabled_models = {'glove': True, 'head': True}  # 默认启用手套和摸头模型
         self.model_confidence = {'glove': 0.8, 'head': 0.8}
         self.model_thresholds = {'glove': 5, 'head': 3}  # 模型报警阈值
         
