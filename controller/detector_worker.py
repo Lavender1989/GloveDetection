@@ -100,9 +100,18 @@ class DetectorWorker(QObject):
                 self.area_boxes = self.load_area_from_xml(self.xml_paths[self.current_view])
                 self.log_message.emit(f"已根据视频尺寸 {w}x{h} 重新加载并缩放检测区域")
         
-        # 1. 模型推理
+        # 1. 模型推理 - 添加性能优化参数
         conf_threshold = 0.5 if self.detection_type == 2 else 0.8  # 摸头检测使用较低的置信度阈值
-        results = self.model(frame, conf=conf_threshold, verbose=False)[0]
+        results = self.model(
+            frame, 
+            conf=conf_threshold, 
+            verbose=False,
+            device='cuda',  # 使用GPU加速
+            imgsz=640,  # 调整输入图像大小，平衡速度和精度
+            half=True,  # 使用半精度推理（如果设备支持）
+            agnostic_nms=True,  # 类别无关的NMS，提高速度
+            max_det=10  # 限制最大检测数量，减少后续处理
+        )[0]
         annotated_frame = frame.copy()
         danger_detected = False
         detection_boxes = []

@@ -40,10 +40,10 @@ class MainWindow(QMainWindow):
 
         # 连接控制器的信号到UI更新函数
         # 仅在控制器存在时连接信号
-        # if self.controller:
-        #     self.controller.video_frame_updated.connect(self.update_video_frame)
-        #     self.controller.video_added.connect(self.add_video_tab)
-        #     self.controller.video_removed.connect(self.remove_video_tab)
+        if self.controller:
+            self.controller.video_frame_updated.connect(self.update_video_frame)
+            self.controller.video_added.connect(self.add_video_tab)
+            self.controller.video_removed.connect(self.remove_video_tab)
 
     def init_video_tabs(self):
         """初始化视频显示标签页控件（配置QTabWidget）"""
@@ -118,7 +118,9 @@ class MainWindow(QMainWindow):
 
     def update_video_frame(self, video_id, qimage):
         """更新指定视频标签页的画面"""
+        # print(f"[DEBUG] update_video_frame: 收到视频ID {video_id} 的帧，尺寸: {qimage.width()}x{qimage.height()}")
         if video_id not in self.video_tabs:
+            print(f"[DEBUG] update_video_frame: 未找到视频ID {video_id} 对应的标签页")
             return
 
         label = self.video_tabs[video_id]['label']
@@ -131,6 +133,7 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation
         )
         label.setPixmap(pixmap)
+        # print(f"[DEBUG] update_video_frame: 成功更新视频ID {video_id} 的帧显示")
         
     def on_model_select(self):
         """处理模型选择按钮点击事件"""

@@ -7,9 +7,11 @@ import xml.etree.ElementTree as ET
 
 # 定义视频名称与视角的映射关系，使用列表存储不同视角对应的关键字
 # 这样后续只需要在列表中添加新的关键字即可
-VIEW_1_KEYWORDS = ['20250829_1', '20250820_1', 
+VIEW_1_KEYWORDS = ['20250829_1', '20250820_1', '20250729_2', '20250729_1', '1204(1)',
+                    '0911_1', '1112_1',
                    'rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/201']
-VIEW_2_KEYWORDS = ['20250829_2', '20250820_2',
+VIEW_2_KEYWORDS = ['20250829_2', '20250820_2', '1204', '1112_3', '1112_2', '1120_3',
+                    '1120_4', '1120_5(2)', '1120_6(2)', '1120_7', '1120_8',
                    'rtsp://admin:abc12345@192.168.1.102/cam/realmonitor?channel=1&subtype=0&proto=Private3']
 VIEW_3_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/301']
 VIEW_4_KEYWORDS = ['rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/401']
@@ -32,16 +34,7 @@ def get_view_for_video(video_path):
     
     # RTSP地址处理
     if video_path.lower().startswith("rtsp://"):
-        # 提取IP地址的最后一段数字
-        # ip_match = re.search(r'\b(?:\d{1,3}\.){3}(\d{1,3})\b', video_path)
-        # if ip_match:
-        #     last_octet = ip_match.group(1)
-        #     # 104对应视角1, 102对应视角2
-        #     # 改了一个对应的关系：rtsp://admin:abc12345@10.66.3.243:554/Streaming/Channels/201 对应视角1
-        #     if last_octet == "201":
-        #         return 0
-        #     elif last_octet == "102":
-        #         return 1
+        # 首先检查是否完全匹配关键字列表中的URL
         if video_path in VIEW_1_KEYWORDS:
             return 0
         elif video_path in VIEW_2_KEYWORDS:

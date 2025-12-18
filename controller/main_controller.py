@@ -2,185 +2,174 @@
 import os
 import sys
 import time
+import numpy as np
 
 import cv2
+import torch
 from PyQt6 import QtGui
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QImage
 from PyQt6.QtWidgets import QTreeWidgetItem, QMessageBox
 
-from model.db import Database, VideoSource, Scene, Email
+from model.db import Database, VideoSource
 from view.dialogs import VideoSourceDialog, SceneDialog
+from .video_capture_manager import VideoCaptureManager
 
 
 class DetectionThread(QThread):
-    """视频检测线程（支持暂停/继续）"""
+    """新版检测线程，对接新版 MultiDetectorWorker（内部含输入线程 + 推理线程）"""
     log_signal = pyqtSignal(str)
     alert_signal = pyqtSignal(str)
-    frame_processed = pyqtSignal(int, QImage)  # 新增信号：帧处理完成
-    rtsp_disconnected = pyqtSignal(int)  # 新增：RTSP断流信号，携带video_id
+    frame_processed = pyqtSignal(int, QImage)
+    rtsp_disconnected = pyqtSignal(int)
 
-    def __init__(self, video_source, interval):
+    def __init__(self, video_source, capture_manager):
         super().__init__()
         self.video_source = video_source
-        self.running = False  # 线程是否运行
-        self.paused = False   # 线程是否暂停
+        self.capture_manager = capture_manager
+        # self.running = True
+        # self.paused = False
         self.detector = None
-        self.show_ui = True
-        self.interval = interval
-        self.cap = None       # 保存视频捕获对象，用于暂停后继续
-        self.frame_pos = 0    # 记录当前帧位置（用于文件视频）
-        # 启用的模型和置信度
-        self.enabled_models = {'glove': True, 'head': True}  # 默认启用手套和摸头模型
+        
+        self.enabled_models = {'glove': True, 'head': False}
         self.model_confidence = {'glove': 0.8, 'head': 0.8}
-        self.model_thresholds = {'glove': 5, 'head': 3}  # 模型报警阈值
+        self.model_thresholds = {'glove': 5, 'head': 10}
+
+    def update_models(self, enabled, confidence, thresholds):
+        # MainController动态更新模型配置
+        self.enabled_models = enabled
+        self.model_confidence = confidence
+        self.model_thresholds = thresholds
         
-    def update_models(self, enabled_models, model_confidence, model_thresholds):
-        """更新模型配置
-        
-        Args:
-            enabled_models: 启用的模型字典 {model_name: bool}
-            model_confidence: 模型置信度字典 {model_name: float}
-            model_thresholds: 模型报警阈值字典 {model_name: int}
-        """
-        self.enabled_models = enabled_models
-        self.model_confidence = model_confidence
-        self.model_thresholds = model_thresholds
-        self.log_signal.emit(f"已更新模型配置: 启用模型={enabled_models}, 置信度={model_confidence}, 阈值={model_thresholds}")
-        
-        # 如果检测器已初始化，传递更新的配置
-        if self.detector and hasattr(self.detector, 'update_config'):
-            try:
-                self.detector.update_config(enabled_models, model_confidence, model_thresholds)
-                self.log_signal.emit(f"检测器配置更新成功")
-            except Exception as e:
-                self.log_signal.emit(f"更新检测器配置失败: {str(e)}")
+        # 将更新后的配置传递给detector
+        if hasattr(self, 'detector'):
+            self.detector.update_models(enabled, confidence, thresholds)
 
     def run(self):
-        self.running = True
-        self.paused = False
-        self.log_signal.emit(f"开始处理视频: {self.video_source.name}")
+        from .worker import MultiDetectorWorker
+        from .video_view_mapping import get_view_for_video, get_view_name
 
-        try:
-            from .multi_detector_worker import MultiDetectorWorker
-            from .video_view_mapping import get_view_for_video, get_view_name
-            
-            # 日志输出视频类型
-            video_type = "RTSP地址" if self.video_source.path.lower().startswith("rtsp://") else "本地文件"
-            self.log_signal.emit(f"视频类型: {video_type}")
-            
-            # 提前确定视角并输出日志
-            self.log_signal.emit(f"视频路径: {self.video_source.path}")
-            view_index = get_view_for_video(self.video_source.path)
-            view_name = get_view_name(view_index)
-            self.log_signal.emit(f"{self.video_source.name}: 成功加载{view_name}")
-            
-            # 初始化检测器，传递模型配置
-            models_config = {
-                'glove': {
-                    'path': get_resource_path("../model/glove/best.pt"),
-                    'target_classes': ['bare'],
-                    'conf': self.model_confidence.get('glove', 0.8),
-                    'threshold': self.model_thresholds.get('glove', 5),
-                    'frame_threshold': 10,    # 手套需要在区域内持续多少帧才触发（示例）
-                    'trigger_mode': 'area'    # 'area' 表示需要进入指定area；'any' 表示画面任意处
-                },
-                'head': {
-                    'path': get_resource_path("../model/head/best.pt"),
-                    'target_classes': ['touch'],
-                    'conf': self.model_confidence.get('head', 0.8),
-                    'threshold': self.model_thresholds.get('head', 3),
-                    'frame_threshold': 3,     # 摸头持续多少帧触发
-                    'trigger_mode': 'any'     # 摸头在画面任意位置即可触发
-                }
+        video_name = self.video_source.name
+        video_id = self.video_source.id
+        video_url = self.video_source.path
+
+        self.log_signal.emit(f"启动检测线程: {video_name}")
+
+        # 视角推断
+        view_index = get_view_for_video(video_url)
+        print(f"[DEBUG] 视角推断: {view_index}")
+        view_name = get_view_name(view_index)
+        self.log_signal.emit(f"{video_name}: 加载{view_name}")
+
+        # 模型配置
+        models_config = {
+            'glove': {
+                'path': get_resource_path("../model/glove/best.pt"),
+                'target_classes': ['bare'],
+                'conf': self.model_confidence['glove'],
+                'threshold': self.model_thresholds['glove'],
+                'frame_threshold': 10,
+                'trigger_mode': 'area',
+                'enabled': self.enabled_models['glove']
+            },
+            'head': {
+                'path': get_resource_path("../model/head/best.pt"),
+                'target_classes': ['touch'],
+                'conf': self.model_confidence['head'],
+                'threshold': self.model_thresholds['head'],
+                'frame_threshold': 10,
+                'trigger_mode': 'any',
+                'enabled': self.enabled_models['head']
             }
+        }
 
-            self.detector = MultiDetectorWorker(
-                models_config, 
-                self.video_source.name,  # 视频名称
-                view_index,  # 视角索引
-                self.video_source.alert_email,  # 报警邮箱
-            )
-            
-            # 应用初始模型启用状态
-            self.detector.update_config(self.enabled_models, self.model_confidence)
-            self.detector.log_message.connect(self.log_signal)
-            self.detector.alert_message.connect(self.alert_signal)
+        # 新版 MultiDetectorWorker：只做推理，不负责读帧
+        self.detector = MultiDetectorWorker(
+            models_config=models_config,
+            video_name=video_name,
+            view_index=view_index,
+            alert_email="",
+            capture_manager=self.capture_manager,
+            video_id=video_id
+        )
 
-            # 连接检测器的帧处理完成信号
-            self.detector.proc_frame_ready.connect(
-                lambda img: self.frame_processed.emit(self.video_source.id, img)
-            )
+        # ⭐ 关键：把 worker 绑定到这个 QThread
+        self.detector.moveToThread(self)
 
-            # 视频处理主循环（RTSP断流时不退出，循环重连）
-            while self.running:
-                # 暂停逻辑：暂停时休眠，不占用CPU
-                while self.paused and self.running:
-                    self.msleep(100)
-                    continue
+        # 日志 & 报警信号
+        self.detector.log_message.connect(self.log_signal)
+        self.detector.alert_message.connect(self.alert_signal)
+        self.detector.proc_frame_ready.connect(
+            lambda qimg: self.frame_processed.emit(video_id, qimg)
+        )
 
-                # 打开视频源（如果是首次运行或视频已关闭）
-                if not self.cap or not self.cap.isOpened():
-                    self.log_signal.emit(f"尝试连接视频源: {self.video_source.name}")
-                    self.cap = cv2.VideoCapture(self.video_source.path)
-                    # RTSP连接需要时间，等待1秒确认是否成功
-                    time.sleep(1)
+        # 将视频源添加到 capture_manager
+        ok = self.capture_manager.add_video_stream(
+            video_id=video_id,
+            video_url=video_url,
+            fps_limit=30
+        )
 
-                    if not self.cap.isOpened():
-                        self.log_signal.emit(f"连接失败，3秒后重试: {self.video_source.name}")
-                        self.rtsp_disconnected.emit(self.video_source.id)  # 发送断流通知
-                        self.msleep(3000)  # 3秒后再重试，避免频繁重试
-                        continue  # 不退出循环，继续尝试重连
+        if not ok:
+            self.log_signal.emit(f"无法连接视频: {video_name}")
+            self.rtsp_disconnected.emit(video_id)
+            return
 
-                # 2. 连接成功后，读取帧并处理
-                ret, frame = self.cap.read()
-                if not ret:
-                    self.log_signal.emit(f"帧读取失败，尝试重连: {self.video_source.name}")
-                    self.rtsp_disconnected.emit(self.video_source.id)
-                    self.cap.release()  # 释放无效连接
-                    self.cap = None  # 标记为未连接，触发下一轮重连
-                    self.msleep(2000)
-                    continue  # 不退出循环，继续重连
+        # attach + start 必须在本线程事件循环中执行
+        QMetaObject.invokeMethod(
+            self.detector,
+            "attach_video_source",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(object, self.capture_manager),
+            Q_ARG(int, video_id)
+        )
 
-                # 3. 按间隔处理帧（避免每帧都处理，降低CPU占用）
-                self.frame_count = getattr(self, 'frame_count', 0) + 1
-                if self.frame_count % self.interval == 0:
-                    try:
-                        self.detector.process_frame(frame)
-                    except Exception as e:
-                        self.log_signal.emit(f"帧处理错误: {str(e)}")
-                        import traceback
-                        self.log_signal.emit(f"错误详情: {traceback.format_exc()}")
+        QMetaObject.invokeMethod(
+            self.detector,
+            "start",
+            Qt.ConnectionType.QueuedConnection
+        )
+        # 启动事件循环（非常重要）
+        self.exec()
 
-                # 4. 控制帧率（避免读取过快）
-                time.sleep(0.01)
+        # 线程退出时清理
+        self.detector.stop()
+        self.capture_manager.remove_video_stream(video_id)
+        self.log_signal.emit(f"停止处理视频: {video_name}")
 
-        except Exception as e:
-            self.log_signal.emit(f"线程异常: {self.video_source.name} - {str(e)}")
-            import traceback
-            self.log_signal.emit(f"异常详情: {traceback.format_exc()}")
-        finally:
-            # 只有线程完全停止时，才释放资源
-            if not self.running and self.cap:
-                self.cap.release()
-                self.cap = None
-            # self.log_signal.emit(f"停止处理视频: {self.video_source.name}")
-
-
+    @pyqtSlot()
     def pause(self):
-        """暂停线程"""
-        self.paused = True
-        self.log_signal.emit(f"暂停处理视频: {self.video_source.name}")
-
+        if self.detector:
+            # 1️⃣ 停止推理
+            QMetaObject.invokeMethod(
+                self.detector, "pause", Qt.ConnectionType.QueuedConnection
+            )
+            # 2️⃣ 冻结视频
+            self.capture_manager.pause_video(self.video_source.id)
+            self.log_signal.emit(f"暂停处理视频: {self.video_source.name}")
+    
+    @pyqtSlot()
     def resume(self):
-        """继续线程"""
-        self.paused = False
-        self.log_signal.emit(f"继续处理视频: {self.video_source.name}")
+        if self.detector:
+            # 1️⃣ 恢复视频
+            self.capture_manager.resume_video(self.video_source.id)
+            # 2️⃣ 恢复推理
+            QMetaObject.invokeMethod(
+                self.detector, "resume", Qt.ConnectionType.QueuedConnection
+            )
+        # self.paused = False
+            self.log_signal.emit(f"继续处理视频: {self.video_source.name}")
 
     def stop(self):
-        """完全停止线程（释放资源）"""
-        self.running = False
-        self.paused = False
+        if self.detector:
+            QMetaObject.invokeMethod(
+                self.detector,
+                "stop",
+                Qt.ConnectionType.QueuedConnection
+            )
+        # self.running = False
+        # self.paused = False
+        self.quit()
         self.wait()
 
 def get_resource_path(relative_path):
@@ -189,7 +178,6 @@ def get_resource_path(relative_path):
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
-
 
 class MainController(QObject):
     # 新增信号
@@ -202,27 +190,25 @@ class MainController(QObject):
         self.main_window = main_window
         self.db = Database()
         self.current_scene_id = None
+        # 管理所有DetectionThread
         self.detection_threads =  {}  # 改为字典存储 {video_id: DetectionThread}
+        
+        # 创建全局视频捕获管理器（不传URL）
+        self.video_capture_manager = VideoCaptureManager()
+        self.video_capture_manager.log_message.connect(self.log)
+        self.video_capture_manager.rtsp_disconnected.connect(self.handle_rtsp_disconnect)
+        
         # 模型路径配置
         self.model_paths = {
             'glove': get_resource_path("../model/glove/best.pt"),  # 手套模型
             'head': get_resource_path("../model/head/best.pt")    # 头部模型
         }
         # 启用的模型
-        self.enabled_models = {
-            'glove': True,
-            'head': False  # 默认不启用头部模型
-        }
+        self.enabled_models = {'glove': True,'head': False}
         # 模型置信度
-        self.model_confidence = {
-            'glove': 0.8,
-            'head': 0.8
-        }
+        self.model_confidence = {'glove': 0.8,'head': 0.8}
         # 模型报警阈值（连续检测到危险的帧数）
-        self.model_thresholds = {
-            'glove': 5,
-            'head': 3
-        }
+        self.model_thresholds = {'glove': 5,'head': 10}
 
         # 初始化日志模型
         self.log_model = QStandardItemModel()
@@ -263,8 +249,8 @@ class MainController(QObject):
         self.main_window.edit_video_btn.clicked.connect(self.edit_video_source)
 
         # 添加停止检测按钮连接
-        self.main_window.close_detection_btn.clicked.connect(self.pause_detection)
-
+        # self.main_window.close_detection_btn.clicked.connect(self.stop_all_detections)
+        self.main_window.close_detection_btn.clicked.connect(self.pause_all_detection)
         # 视频列表项点击事件（处理选择状态）
         self.main_window.video_list.itemChanged.connect(self.on_video_item_changed)
 
@@ -332,8 +318,6 @@ class MainController(QObject):
 
             self.main_window.video_list.addTopLevelItem(item)
 
-
-
     def add_scene(self):
         """添加新场景"""
         dialog = SceneDialog(self.main_window)
@@ -380,13 +364,12 @@ class MainController(QObject):
             for video_id, thread in self.detection_threads.items():
                 if thread and thread.isRunning():
                     # 在DetectionThread类中实现
-                    if hasattr(thread, 'update_models'):
-                        thread.update_models(self.enabled_models, self.model_confidence, self.model_thresholds)
+                    thread.update_models(self.enabled_models, self.model_confidence, self.model_thresholds)
             
             QMessageBox.information(self.main_window, "成功", "模型选择已更新")
             
         except Exception as e:
-            self.log(f"更新模型选择失败: {str(e)}", is_error=True)
+            self.log(f"[错误] 更新模型选择失败: {str(e)}")
             QMessageBox.critical(self.main_window, "错误", f"更新模型选择失败: {str(e)}")
 
     def delete_current_scene(self):
@@ -527,30 +510,32 @@ class MainController(QObject):
             print(f"[模型配置] 置信度设置: {self.model_confidence}")
             
             # 获取当前场景下所有选中的视频
-            selected_videos = []
-            videos = self.db.get_videos_by_scene(self.current_scene_id)
-            for video in videos:
-                if video.is_true:
-                    selected_videos.append(video)
+            videos = [v for v in self.db.get_videos_by_scene(self.current_scene_id)
+                  if v.is_true]
 
-            if not selected_videos:
+            if not videos:
                 QMessageBox.warning(self.main_window, "警告", "请先选择要检测的视频源")
                 return
 
-            self.log(f"开始对 {len(selected_videos)} 个视频源进行检测...")
-            frame_interval = min(5, max(3, len(selected_videos) // 2))
-
+            self.log(f"开始对 {len(videos)} 个视频源进行检测...")
+            
             # 为每个选中的视频源创建或恢复检测线程
-            for video in selected_videos:
+            for video in videos:
                 try:
                     # 检查是否已有该视频的线程
                     if video.id in self.detection_threads:
-                        thread = self.detection_threads[video.id]
-                        if thread.paused:
-                            thread.resume()
+                        self.log(f"视频已在运行: {video.name}")
+                        # thread = self.detection_threads[video.id]
+                        # if thread.paused:
+                        #     thread.resume()
+                        self.detection_threads[video.id].resume()
                     else:
-                        # 创建新线程
-                        thread = DetectionThread(video, frame_interval)
+                        # 创建新线程，传递VideoCaptureManager
+                        thread = DetectionThread(video, self.video_capture_manager)
+                        # 更新模型配置
+                        thread.enabled_models = self.enabled_models
+                        thread.model_confidence = self.model_confidence
+                        thread.model_thresholds = self.model_thresholds
                         thread.log_signal.connect(self.log)
                         thread.alert_signal.connect(lambda msg, vid=video.name:
                                                     self.log(f"[报警] {vid}: {msg}"))
@@ -625,8 +610,7 @@ class MainController(QObject):
 
         # 5. 创建新线程并重连
         try:
-            frame_interval = min(5, max(3, len(self.db.get_videos_by_scene(self.current_scene_id)) // 2))
-            new_thread = DetectionThread(video, frame_interval)
+            new_thread = DetectionThread(video, self.video_capture_manager)
             # 重新连接信号
             new_thread.log_signal.connect(self.log)
             new_thread.alert_signal.connect(lambda msg, vid=video.name: self.log(f"[报警] {vid}: {msg}"))
@@ -635,24 +619,36 @@ class MainController(QObject):
 
             self.detection_threads[video_id] = new_thread
             new_thread.start()
-            self.log(f"RTSP重连成功: {video.name}（ID={video_id}）已重启检测")
+            self.log(f"RTSP重连成功: {video.name}(ID={video_id})已重启检测")
             self.video_added.emit(video_id, video.name)  # 恢复标签页
         except Exception as e:
             self.log(f"重连线程创建失败: {video.name} - {str(e)}")
             import traceback
             self.log(f"错误详情: {traceback.format_exc()}")
     """暂停所有检测线程"""
-    def pause_detection(self):
+    def pause_all_detection(self):
         if not self.detection_threads:
             QMessageBox.information(self.main_window, "提示", "没有正在运行的检测线程")
             return
 
         for thread in self.detection_threads.values():
-            if thread.isRunning() and not thread.paused:
+            # if thread.isRunning() and not thread.paused:
+            if thread.isRunning():  # UI层不知道paused的内部状态，只发pause
                 thread.pause()
         self.log("已暂停所有检测线程")
 
-    """停止所有检测线程"""
+    def resume_all_detection(self):
+        if not self.detection_threads:
+            QMessageBox.information(self.main_window, "提示", "没有正在运行的检测线程")
+            return
+
+        for thread in self.detection_threads.values():
+            if thread.isRunning():  # UI层不知道paused的内部状态，只发resume
+                thread.resume()
+        self.log("已恢复所有检测线程")
+    
+
+    """停止所有检测线程 不再【停止检测】调用"""
     def stop_all_detections(self):
         for video_id in list(self.detection_threads.keys()):
             self.stop_video_detection(video_id)
@@ -660,16 +656,19 @@ class MainController(QObject):
 
     """停止指定视频的检测"""
     def stop_video_detection(self, video_id):
-        if video_id in self.detection_threads:
-            thread = self.detection_threads[video_id]
-            if thread.isRunning():
-                thread.stop()  # 等待线程完全停止
-            del self.detection_threads[video_id]
-            self.video_removed.emit(video_id)
-            self.log(f"已停止视频源 {video_id} 的检测线程")
+        if video_id not in self.detection_threads:
+            return
+        thread = self.detection_threads[video_id]
+        if thread.isRunning():
+            thread.stop()  # 等待线程完全停止            
+        del self.detection_threads[video_id]
+        self.video_removed.emit(video_id)
+        self.log(f"已停止视频源 {video_id} 的检测线程")
 
     """处理检测线程发送的处理后帧"""
     def on_frame_processed(self, video_id, qimage):
+        # print(f"[QIMAGE] width={qimage.width()}, height={qimage.height()}, bytesPerLine={qimage.bytesPerLine()}")
+        # print(f"[DEBUG] on_frame_processed: 收到视频ID {video_id} 的帧，尺寸: {qimage.width()}x{qimage.height()}")
         self.video_frame_updated.emit(video_id, qimage)
 
     def log(self, message):
