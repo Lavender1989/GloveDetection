@@ -111,16 +111,41 @@ class VideoReader:
         if result:
             h = caps.get_structure(0).get_value('height')
             w = caps.get_structure(0).get_value('width')
-            frame = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape((h, w, 4))
-            self._frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-            buf.unmap(mapinfo)
-        return Gst.FlowReturn.OK
+            format = struct.get_string("format")  # 如BGRx/BGRA
+            channels = 4 if "BGRx" in format or "BGRA" in format else 3
+            frame_size = mapinfo.size
+            expected_size = h * w * channels
+            if frame_size != expected_size:
+                print(f"[WARN] 帧尺寸不匹配：实际{frame_size} ≠ 预期{h}×{w}×{channels}={expected_size}")
+                # 容错：按实际尺寸reshape（避免崩溃）
+                frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+                # 尝试自动推导尺寸（兜底）
+                frame = frame.reshape((h, w, -1))
+            else:
+                frame = np.frombuffer(mapinfo.data, dtype=np.uint8).reshape((h, w, channels))
+            
+            # 5. 转换为3通道BGR（如果是4通道）
+            if channels == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            
+            # 后续处理帧...
+            return Gst.FlowReturn.OK
 
     def read(self):
         if self._use_gst:
-            return (self._frame is not None, self._frame)
+            ret = self._frame is not None
+            frame = self._frame
+            if ret:
+                print(f"[DEBUG] VideoReader (GST) 成功读取帧: {frame.shape}")
+            else:
+                print(f"[DEBUG] VideoReader (GST) 未读取到帧")
+            return ret, frame
         else:
             ret, frame = self.cap.read()
+            if ret:
+                print(f"[DEBUG] VideoReader (OpenCV) 成功读取帧: {frame.shape}")
+            else:
+                print(f"[DEBUG] VideoReader (OpenCV) 未读取到帧")
             if self.fps_limit:
                 time.sleep(1.0 / self.fps_limit)
             return ret, frame
@@ -140,18 +165,27 @@ class FrameBuffer:
         self.q = queue.Queue(maxsize=maxsize)
 
     def push(self, frame):
+        print(f"[DEBUG] FrameBuffer.push: 收到帧，形状: {frame.shape}")
         if self.q.full():
             try:
-                self.q.get_nowait()  # 丢掉最旧帧
+                old_frame = self.q.get_nowait()  # 丢掉最旧帧
+                print(f"[DEBUG] FrameBuffer.push: 队列已满，丢掉旧帧")
             except queue.Empty:
                 pass
         self.q.put_nowait(frame)
+        print(f"[DEBUG] FrameBuffer.push: 帧已入队，当前队列大小: {self.q.qsize()}")
 
     def get_latest(self):
         # LIFO 策略：获取最新帧
         frame = None
+        count = 0
         while not self.q.empty():
             frame = self.q.get()
+            count += 1
+        if frame is not None:
+            print(f"[DEBUG] FrameBuffer.get_latest: 获取到最新帧，形状: {frame.shape}，共处理 {count} 帧")
+        else:
+            print(f"[DEBUG] FrameBuffer.get_latest: 未获取到帧")
         return frame
 
 # =============== 4. VideoCaptureManager（多视频流管理器） ===============
@@ -263,6 +297,7 @@ class VideoCaptureManager(QObject):
         单个视频流的捕获循环
         """
         try:
+            print(f"[DEBUG] VideoCaptureManager._capture_loop: 开始捕获视频流 {video_id} - {video_url}")
             # 创建视频读取器
             reader = VideoReader(video_url, fps_limit=fps_limit)
             fps_dt = 1.0 / fps_limit if fps_limit else getattr(reader, 'fps_dt', 1/30)
@@ -270,10 +305,13 @@ class VideoCaptureManager(QObject):
             last_t = 0
             reconnect_count = 0
             was_reconnecting = False # 是否需要重连
+            frame_count = 0
+            success_count = 0
 
             while self._running:
                 # ⭐ 暂停检查
                 if video_id in self._paused_streams:
+                    print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 已暂停")
                     time.sleep(0.02)
                     continue
                 # 按FPS限速
@@ -284,11 +322,15 @@ class VideoCaptureManager(QObject):
                         continue
                     last_t = now
                 
+                frame_count += 1
+                print(f"[DEBUG] VideoCaptureManager._capture_loop: 第 {frame_count} 次尝试读取视频流 {video_id}")
                 ret, frame = reader.read()
                 if not ret or frame is None:
+                    print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 读取失败")
                     if reader.is_file:
                         # ⭐ 本地视频：播放完毕，需要循环播放
                         self.log_message.emit(f"[视频 {video_id}] 播放完毕，重新开始播放")
+                        print(f"[DEBUG] VideoCaptureManager._capture_loop: 本地视频 {video_id} 播放完毕，重新开始")
                         try:
                             reader.release()
                             reader = VideoReader(video_url, fps_limit=fps_limit)
@@ -296,6 +338,7 @@ class VideoCaptureManager(QObject):
                             continue
                         except Exception as e:
                             self.log_message.emit(f"[视频 {video_id}] 重新打开视频文件失败: {e}")
+                            print(f"[DEBUG] VideoCaptureManager._capture_loop: 重新打开视频文件 {video_id} 失败: {e}")
                             time.sleep(1.0)
                             continue
 
@@ -303,30 +346,41 @@ class VideoCaptureManager(QObject):
                         reconnect_count += 1
                         was_reconnecting = True  # 正在进行重连
                         self.log_message.emit(f"[视频 {video_id}] 连接丢失，正在重连... ({reconnect_count})")
+                        print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 连接丢失，正在重连... ({reconnect_count})")
                         time.sleep(1.0)
                     
                         # 重连机制
                         if reconnect_count > 5:
                             self.log_message.emit(f"[视频 {video_id}] 重连失败，放弃")
+                            print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 重连失败，放弃")
                             self.rtsp_disconnected.emit(video_id)
                             break
                         try:
                             reader.release()
                             reader = VideoReader(video_url, fps_limit=fps_limit)
                             reconnect_count = 0
-
+                            print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 重连成功")
                         except Exception as e:
                             self.log_message.emit(f"[视频 {video_id}] 重连失败: {e}")
+                            print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 重连失败: {e}")
                             time.sleep(1.0)
                     continue
+                
+                success_count += 1
+                print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 读取成功，帧形状: {frame.shape}，成功次数: {success_count}/{frame_count}")
+                
                 # 过滤全黑帧
                 if not frame.any():
+                    print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 读取到全黑帧，跳过")
                     continue
 
                 if was_reconnecting:
                     self.log_message.emit(f"[视频 {video_id}] 重连成功")
+                    print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 重连成功")
                     was_reconnecting = False  # 重连成功，重置标志
                     reconnect_count = 0
+                
+                print(f"[DEBUG] VideoCaptureManager._capture_loop: 视频流 {video_id} 将帧推入缓冲区")
                 buffer.push(frame)
                 
         except Exception as e:

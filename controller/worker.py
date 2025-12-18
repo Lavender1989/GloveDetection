@@ -94,6 +94,8 @@ class MultiDetectorWorker(QObject):
         inference_thread 发回 raw_results（ultralytics 对象）
         在此做后处理、绘图、UI 更新与报警触发
         """
+        frame_shape = frame_np.shape if hasattr(frame_np, 'shape') else 'Unknown'
+        self.log_message.emit(f"DEBUG: Received inference result for video {self.video_id}, frame shape={frame_shape}")
         h, w = frame_np.shape[:2]
         if (self.postproc.area_boxes == []) and (self.view_index is not None) and not self._area_loaded:
             boxes, log_msg = load_area_for_view(self.view_index, w, h)
@@ -168,11 +170,16 @@ class MultiDetectorWorker(QObject):
             return
         # ⭐ 背压
         if self.inference_thread.is_busy():
+            self.log_message.emit(f"DEBUG: Inference thread is busy, skipping frame for video {self.video_id}")
             return
         frame = self.capture_manager.get_latest_frame(self.video_id)
         if frame is None:
+            self.log_message.emit(f"DEBUG: No frame obtained from buffer for video {self.video_id}")
             return
+        frame_shape = frame.shape if hasattr(frame, 'shape') else 'Unknown'
+        self.log_message.emit(f"DEBUG: Got frame from buffer for video {self.video_id}, shape={frame_shape}")
         self.inference_thread.add_task(frame)
+        self.log_message.emit(f"DEBUG: Sent frame to inference thread for video {self.video_id}")
 
     @pyqtSlot()
     def start(self):

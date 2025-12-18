@@ -53,7 +53,7 @@ class DetectionThread(QThread):
         video_id = self.video_source.id
         video_url = self.video_source.path
 
-        self.log_signal.emit(f"启动检测线程: {video_name}")
+        self.log_signal.emit(f"DEBUG: 启动检测线程: {video_name} (ID: {video_id})")
 
         # 视角推断
         view_index = get_view_for_video(video_url)
@@ -104,6 +104,7 @@ class DetectionThread(QThread):
         )
 
         # 将视频源添加到 capture_manager
+        self.log_signal.emit(f"DEBUG: 将视频源添加到capture_manager: {video_name} (URL: {video_url})")
         ok = self.capture_manager.add_video_stream(
             video_id=video_id,
             video_url=video_url,
@@ -111,9 +112,10 @@ class DetectionThread(QThread):
         )
 
         if not ok:
-            self.log_signal.emit(f"无法连接视频: {video_name}")
+            self.log_signal.emit(f"DEBUG: 无法连接视频: {video_name}")
             self.rtsp_disconnected.emit(video_id)
             return
+        self.log_signal.emit(f"DEBUG: 视频源添加成功: {video_name}")
 
         # attach + start 必须在本线程事件循环中执行
         QMetaObject.invokeMethod(
@@ -193,11 +195,6 @@ class MainController(QObject):
         # 管理所有DetectionThread
         self.detection_threads =  {}  # 改为字典存储 {video_id: DetectionThread}
         
-        # 创建全局视频捕获管理器（不传URL）
-        self.video_capture_manager = VideoCaptureManager()
-        self.video_capture_manager.log_message.connect(self.log)
-        self.video_capture_manager.rtsp_disconnected.connect(self.handle_rtsp_disconnect)
-        
         # 模型路径配置
         self.model_paths = {
             'glove': get_resource_path("../model/glove/best.pt"),  # 手套模型
@@ -213,6 +210,13 @@ class MainController(QObject):
         # 初始化日志模型
         self.log_model = QStandardItemModel()
         self.main_window.log_box.setModel(self.log_model)
+        
+        # 创建全局视频捕获管理器（不传URL）
+        self.log("DEBUG: 正在初始化VideoCaptureManager")
+        self.video_capture_manager = VideoCaptureManager()
+        self.video_capture_manager.log_message.connect(self.log)
+        self.video_capture_manager.rtsp_disconnected.connect(self.handle_rtsp_disconnect)
+        self.log("DEBUG: VideoCaptureManager初始化完成")
 
         # 初始化UI和信号连接
         self.init_ui()
@@ -571,7 +575,7 @@ class MainController(QObject):
 
     def handle_rtsp_disconnect(self, video_id):
         """处理RTSP断流：通知UI并触发重连"""
-        self.log(f"RTSP断流: 视频源ID={video_id}，将自动重连")
+        self.log(f"DEBUG: RTSP断流: 视频源ID={video_id}，将在2秒后自动重连")
         # 修复：删除多余的self参数，2秒后触发重连
         QTimer.singleShot(2000, lambda: self.restart_rtsp_detection(video_id))
 
@@ -667,9 +671,13 @@ class MainController(QObject):
 
     """处理检测线程发送的处理后帧"""
     def on_frame_processed(self, video_id, qimage):
-        # print(f"[QIMAGE] width={qimage.width()}, height={qimage.height()}, bytesPerLine={qimage.bytesPerLine()}")
-        # print(f"[DEBUG] on_frame_processed: 收到视频ID {video_id} 的帧，尺寸: {qimage.width()}x{qimage.height()}")
-        self.video_frame_updated.emit(video_id, qimage)
+        try:
+            width = qimage.width() if hasattr(qimage, 'width') else 'Unknown'
+            height = qimage.height() if hasattr(qimage, 'height') else 'Unknown'
+            self.log(f"DEBUG: on_frame_processed: 收到视频ID {video_id} 的帧，尺寸: {width}x{height}")
+            self.video_frame_updated.emit(video_id, qimage)
+        except Exception as e:
+            self.log(f"DEBUG: on_frame_processed 错误: {str(e)}")
 
     def log(self, message):
         """添加日志信息"""
@@ -677,9 +685,13 @@ class MainController(QObject):
         log_message = f"[{timestamp}] {message}"
         item = QStandardItem(log_message)
 
-        # 如果是报警信息，设置为红色
-        if "[报警]" in log_message:
+        # 根据日志类型设置颜色
+        if "[报警]" in log_message or "错误" in log_message or "ERROR" in log_message:
             item.setForeground(QtGui.QColor("red"))
+        elif "成功" in log_message or "SUCCESS" in log_message:
+            item.setForeground(QtGui.QColor("green"))
+        elif "DEBUG:" in log_message:
+            item.setForeground(QtGui.QColor("gray"))
 
         self.log_model.appendRow(item)
         # 自动滚动到底部
