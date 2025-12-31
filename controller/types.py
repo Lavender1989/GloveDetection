@@ -94,8 +94,54 @@ class DetectionHistory:
         return True
 
 
+from typing import List, Dict, Any
+from ultralytics import YOLO
+import torch
+import threading
+
+# 模型管理器单例类，用于共享模型实例
+class ModelManager:
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(ModelManager, cls).__new__(cls)
+                    cls._instance.models = {}
+                    cls._instance.model_lock = threading.Lock()
+                    # 添加全局推理锁，确保同一时间只有一个线程在使用模型进行推理
+                    cls._instance.inference_global_lock = threading.Lock()
+        return cls._instance
+    
+    def get_model(self, model_path: str, device: str = 'cuda'):
+        """获取或创建模型实例"""
+        with self.model_lock:
+            if model_path not in self.models:
+                # 加载新模型
+                model = YOLO(model_path)
+                model.to(device)
+                self.models[model_path] = model
+            return self.models[model_path]
+    
+    def release_all_models(self):
+        """释放所有模型占用的GPU内存"""
+        with self.model_lock:
+            for model_path, model in self.models.items():
+                if hasattr(model, 'cpu'):
+                    try:
+                        model.cpu()
+                    except Exception:
+                        pass
+            self.models.clear()
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
 class DetectionModel:
-    """包含模型、阈值与触发策略"""
+    """检测模型，封装 YOLO 模型"""
     def __init__(self,
                  name: str,
                  model_path: str,
@@ -111,30 +157,30 @@ class DetectionModel:
             - 'any'  : 只要检测到就计为危险（适合 touch）
         """
         self.name = name
-        self.model = YOLO(model_path)
-        # 检查CUDA可用性并设置设备
-        self.device = 'cuda'
-        self.model.to(self.device)
-        # print(f"{self.name} 模型已加载到 {self.device} 设备")
+        self.model_path = model_path
         self.target_classes = target_classes
         self.conf_threshold = conf_threshold
         self.frame_threshold = frame_threshold
         self.trigger_mode = trigger_mode
         self.enabled = enabled  # 可由外部配置开关
+        
+        # 检查CUDA可用性并设置设备
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        # 使用模型管理器获取共享模型实例
+        self.model_manager = ModelManager()
+        self.model = self.model_manager.get_model(model_path, self.device)
+        
+        # 确保模型处于评估模式
+        self.model.eval()
+        
+        # 设置BatchNorm层为推理模式，避免多线程问题
+        for module in self.model.modules():
+            if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+                module.track_running_stats = False
     
     def release(self):
-        """释放模型占用的GPU内存"""
-        if hasattr(self, 'model'):
-            # 尝试释放模型
-            import torch
-            try:
-                # 清除模型占用的GPU内存
-                self.model.cpu()  # 将模型移回CPU
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-            except Exception as e:
-                pass
-            finally:
-                # 置空模型引用
-                self.model = None
+        """释放模型占用的GPU内存（实际由ModelManager管理）"""
+        # 这里不需要释放模型，因为模型是共享的
+        # 只有当所有DetectionModel实例都不再使用时，才会由ModelManager统一释放
+        pass

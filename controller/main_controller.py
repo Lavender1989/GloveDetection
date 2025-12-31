@@ -765,3 +765,14 @@ class MainController(QObject):
         self.stop_all_detections()
         if hasattr(self, 'db'):
             self.db.close()
+        
+        # 释放所有共享模型占用的GPU内存
+        from .types import ModelManager
+        model_manager = ModelManager()
+        model_manager.release_all_models()
+        
+        # 清除GPU内存缓存
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
