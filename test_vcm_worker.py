@@ -35,9 +35,7 @@ def test_vcm_worker_interaction():
     print(f"2. 添加视频流 {video_id} -> {video_path}...")
     success = vcm.add_video_stream(
         video_id=video_id,
-        video_url=video_path,
-        width=1280,
-        height=720
+        video_url=video_path
     )
     
     if not success:
@@ -83,7 +81,22 @@ def test_vcm_worker_interaction():
     # 5. 测试 Scheduler
     print("\n5. 测试 Scheduler...")
     frame_queue = queue.Queue(maxsize=5)
-    scheduler = Scheduler(grabber.grab, frame_queue, target_fps=10)
+    
+    # 修改Scheduler的使用方式，适配新版本接口
+    scheduler = Scheduler(target_fps=10)
+    
+    # 创建一个槽函数来处理定时触发
+    def on_scheduler_tick():
+        frame = grabber.grab()
+        if frame is not None:
+            try:
+                frame_id = int(time.time() * 1000)  # 使用时间戳作为frame_id
+                frame_queue.put_nowait((frame_id, frame))
+            except queue.Full:
+                pass
+    
+    # 连接tick信号到槽函数
+    scheduler.tick.connect(on_scheduler_tick)
     scheduler.start()
     
     time.sleep(1)
@@ -136,58 +149,10 @@ def test_vcm_worker_interaction():
             print(f"[DEBUG] attach_video_source 完成: capture_manager={capture_manager}, video_id={video_id}")
             print(f"[DEBUG] 内部属性: self.capture_manager={self.capture_manager}, self.video_id={self.video_id}")
         
-        def get_latest(self):
-            frame = super().get_latest()
-            if frame is not None:
-                print(f"[DEBUG] get_latest 获取到帧，形状: {frame.shape}")
-            else:
-                print(f"[DEBUG] get_latest 未获取到帧")
-            return frame
-        
-        def get(self, timeout=0.05):
-            frame = super().get(timeout=timeout)
-            if frame is not None:
-                print(f"[DEBUG] get 获取到帧，形状: {frame.shape}")
-            else:
-                print(f"[DEBUG] get 未获取到帧")
-            return frame
-        
-        def _main_loop(self):
-            """重写主循环，添加调试信息"""
-            print("[DEBUG] _main_loop 开始")
-            while self._running:
-                try:
-                    # 从队列获取帧
-                    print("[DEBUG] 尝试从 frame_queue 获取帧...")
-                    frame_id, frame = self.frame_queue.get(timeout=0.1)
-                    self._frame_count += 1
-                    
-                    if frame is not None:
-                        print(f"[DEBUG] 从 frame_queue 获取到帧 {frame_id}，形状: {frame.shape}")
-                        # 提交推理任务到推理线程（恢复原始流程）
-                        print("[DEBUG] 提交推理任务到推理线程...")
-                        success = self.inference_thread.add_task(frame)
-                        if success:
-                            self._inference_count += 1
-                            print(f"[DEBUG] 推理任务已提交到队列，累计处理 {self._frame_count} 帧")
-                        else:
-                            print(f"[DEBUG] 推理任务提交失败，可能队列已满")
-                    else:
-                        print(f"[DEBUG] 从 frame_queue 获取到空帧")
-                        
-                except queue.Empty:
-                    print("[DEBUG] frame_queue 为空")
-                    continue
-                except Exception as e:
-                    print(f"[DEBUG] 主循环错误: {e}")
-                    import traceback
-                    traceback.print_exc()
-            print("[DEBUG] _main_loop 结束")
-            
-        def _on_inference_done(self, frame_np, raw_results):
+        def on_inference_done(self, frame_np, raw_results):
             """重写处理推理结果的方法，添加更多调试信息"""
             self._result_count += 1
-            print(f"\n[DEBUG] _on_inference_done 被调用 (第 {self._result_count} 次)")
+            print(f"\n[DEBUG] on_inference_done 被调用 (第 {self._result_count} 次)")
             print(f"[DEBUG] frame_np 形状: {frame_np.shape}")
             print(f"[DEBUG] raw_results 类型: {type(raw_results)}")
             print(f"[DEBUG] raw_results 内容: {raw_results}")
@@ -219,20 +184,6 @@ def test_vcm_worker_interaction():
                                 detected_objects.append(f"{cls_name} (conf: {conf:.2f})")
                             
                             print(f"[DEBUG]   检测到的目标: {detected_objects}")
-                            
-                            # 手动发出 detection_result 信号
-                            from controller.worker import DetectionResult
-                            results_list = []
-                            for box, conf, cls_id in zip(boxes, confs, cls_ids):
-                                cls_name = result.names[int(cls_id)] if hasattr(result, 'names') else f'class_{int(cls_id)}'
-                                if model_name in self.models and cls_name in self.models[model_name].target_classes and conf >= self.models[model_name].conf_threshold:
-                                    results_list.append(DetectionResult(self.models[model_name].name, cls_name, float(conf), box.tolist()))
-                            
-                            if results_list:
-                                print(f"[DEBUG]   符合条件的目标: {len(results_list)} 个")
-                                self.detection_result.emit(model_name, results_list)
-                            else:
-                                print(f"[DEBUG]   无符合条件的目标 (conf阈值: {self.models[model_name].conf_threshold if model_name in self.models else 'N/A'})")
                         else:
                             print(f"[DEBUG]   无检测框")
                     except Exception as e:
@@ -240,15 +191,17 @@ def test_vcm_worker_interaction():
                         import traceback
                         traceback.print_exc()
             
-            # 调用父类的 _on_inference_done 方法继续处理
-            print("[DEBUG] 调用父类 _on_inference_done 方法")
-            super()._on_inference_done(frame_np, raw_results)
+            # 调用父类的 on_inference_done 方法继续处理
+            print("[DEBUG] 调用父类 on_inference_done 方法")
+            super().on_inference_done(frame_np, raw_results)
     
     worker = DebugMultiDetectorWorker(
         models_config=models_config,
         video_name="Test Video",
         view_index=0,
-        alert_email=""
+        alert_email="",
+        capture_manager=vcm,
+        video_id=video_id
     )
     
     # 连接信号

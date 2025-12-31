@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 跨平台视频捕获管理器
-- Windows平台：使用OpenCV CPU解码
-- Jetson平台：直接使用OpenCV-CUDA解码
+- 统一使用OpenCV CPU解码
 - 提供统一的torch tensor接口
 - 支持多路RTSP流管理
 - 可配置缓冲策略
+- 保留GStreamer硬件解码支持（作为可选功能）
 """
 
 import platform
@@ -17,7 +17,7 @@ import os
 from time import sleep
 from PyQt6.QtCore import QObject, pyqtSignal, QMutex, QMutexLocker
 
-# =============== 1. 自动选择解码后端 ===============
+# =============== 1. 后端选择器（保留GStreamer支持） ===============
 class VideoBackendSelector:
     @staticmethod
     def is_jetson():
@@ -51,14 +51,17 @@ class FrameBuffer:
         # 向后兼容旧代码，提供get方法
         return self.get_latest()
 
-# =============== 3. 跨平台 VideoReader ===============
+# =============== 3. 统一 VideoReader ===============
 class VideoReader:
-    def __init__(self, url, fps_limit=None, use_opencv_cuda=False):
+    def __init__(self, url, fps_limit=None, use_opencv_cuda=False, use_gstreamer=False):
         """
-        跨平台 VideoReader
-        Windows: OpenCV
-        Jetson: 
-            - 默认: OpenCV-CUDA
+        统一使用CPU的OpenCV VideoReader
+        
+        参数：
+        - url: 视频路径或RTSP地址
+        - fps_limit: FPS限制
+        - use_opencv_cuda: 兼容参数，不再使用
+        - use_gstreamer: 是否尝试使用GStreamer硬件解码（仅在Jetson平台有效）
         """
         self.url = url
         self.last_frame_ts = 0.0  # 增加一个心跳判断是否有新帧到达
@@ -66,84 +69,75 @@ class VideoReader:
         self.fps_limit = fps_limit
         self._running = True
         
-        # 检查是否在Jetson平台上
-        if VideoBackendSelector.is_jetson():
-            # 检测视频编码格式
-            is_h265 = False
+        # 尝试使用GStreamer硬件解码（仅在Jetson平台和use_gstreamer=True时）
+        if use_gstreamer and VideoBackendSelector.is_jetson():
             try:
-                # 尝试使用ffprobe检测视频编码格式
-                import subprocess
-                result = subprocess.run(
-                    ["ffprobe", "-v", "error", "-select_streams", "v:0", 
-                     "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", 
-                     self.url],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    codec_name = result.stdout.strip().lower()
-                    is_h265 = codec_name == "hevc"
-            except Exception:
-                # 如果ffprobe不可用或检测失败，基于文件扩展名猜测
-                if self.url.lower().endswith(".mp4"):
-                    # 默认MP4可能是H.264或H.265，尝试H.265
-                    is_h265 = True
-            
-            if is_h265:
-                # Jetson平台上的H.265视频使用GStreamer硬件解码管道
-                print(f"[INFO] 使用GStreamer硬件解码H.265视频: {self.url}")
-                # 构建GStreamer管道
-                if self.is_file:
-                    # 本地文件
-                    gst_pipeline = (
-                        f"filesrc location={self.url} ! "
-                        "qtdemux ! h265parse ! "
-                        "nvv4l2decoder codec=h265 ! nvvidconv ! "
-                        "video/x-raw, format=(string)BGRx ! "
-                        "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
-                    )
-                else:
-                    # RTSP流
-                    gst_pipeline = (
-                        f"rtspsrc location={self.url} latency=0 ! "
-                        "rtph265depay ! h265parse ! "
-                        "nvv4l2decoder codec=h265 ! nvvidconv ! "
-                        "video/x-raw, format=(string)BGRx ! "
-                        "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
-                    )
-                
+                # 检测视频编码格式
+                is_h265 = False
                 try:
+                    # 尝试使用ffprobe检测视频编码格式
+                    import subprocess
+                    result = subprocess.run(
+                        ["ffprobe", "-v", "error", "-select_streams", "v:0", 
+                         "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", 
+                         self.url],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        codec_name = result.stdout.strip().lower()
+                        is_h265 = codec_name == "hevc"
+                except Exception:
+                    # 如果ffprobe不可用或检测失败，基于文件扩展名猜测
+                    if self.url.lower().endswith(".mp4"):
+                        # 默认MP4可能是H.264或H.265，尝试H.265
+                        is_h265 = True
+                
+                if is_h265:
+                    # Jetson平台上的H.265视频使用GStreamer硬件解码管道
+                    print(f"[INFO] 使用GStreamer硬件解码H.265视频: {self.url}")
+                    # 构建GStreamer管道
+                    if self.is_file:
+                        # 本地文件
+                        gst_pipeline = (
+                            f"filesrc location={self.url} ! "
+                            "qtdemux ! h265parse ! "
+                            "nvv4l2decoder codec=h265 ! nvvidconv ! "
+                            "video/x-raw, format=(string)BGRx ! "
+                            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                        )
+                    else:
+                        # RTSP流
+                        gst_pipeline = (
+                            f"rtspsrc location={self.url} latency=0 ! "
+                            "rtph265depay ! h265parse ! "
+                            "nvv4l2decoder codec=h265 ! nvvidconv ! "
+                            "video/x-raw, format=(string)BGRx ! "
+                            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                        )
+                    
                     # 使用GStreamer管道创建VideoCapture
                     self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
-                    if not self.cap.isOpened():
-                        raise RuntimeError(f"无法打开GStreamer管道: {gst_pipeline}")
-                except Exception as e:
-                    print(f"[WARNING] GStreamer硬件解码失败，回退到OpenCV: {e}")
-                    # 回退到普通OpenCV
-                    self.cap = cv2.VideoCapture(self.url)
-                    if not self.cap.isOpened():
-                        raise RuntimeError(f"Cannot open video: {self.url}")
-            else:
-                # 非H.265视频，尝试使用OpenCV-CUDA
-                os.environ['OPENCV_VIDEOIO_PRIORITY_GSTREAMER'] = '0'  # 禁用GStreamer优先级
-                os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '100'  # 提高FFMPEG优先级
-                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'  # H.264
-                
-                try:
-                    self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
-                    if not self.cap.isOpened():
-                        self.cap = cv2.VideoCapture(self.url)
-                        if not self.cap.isOpened():
-                            raise RuntimeError(f"Cannot open video: {self.url}")
-                except Exception as e:
-                    print(f"[WARNING] OpenCV-CUDA初始化失败，回退到regular OpenCV: {e}")
-                    self.cap = cv2.VideoCapture(self.url)
-                    if not self.cap.isOpened():
-                        raise RuntimeError(f"Cannot open video: {self.url}")
-        else:
-            # Windows平台使用默认的OpenCV
+                    if self.cap.isOpened():
+                        print("[INFO] GStreamer硬件解码初始化成功")
+                        # 获取视频 FPS
+                        fps = self.cap.get(cv2.CAP_PROP_FPS)
+                        self.fps_dt = 1.0 / (fps if 1 < fps <= 120 else 30)
+                        return
+                    else:
+                        print("[WARNING] GStreamer硬件解码管道打开失败，回退到OpenCV")
+            except Exception as e:
+                print(f"[WARNING] GStreamer硬件解码初始化失败: {e}")
+        
+        # 统一使用基本的OpenCV VideoCapture（默认方式）
+        try:
             self.cap = cv2.VideoCapture(self.url)
             if not self.cap.isOpened():
-                raise RuntimeError(f"Cannot open video: {url}")
+                raise RuntimeError(f"Cannot open video: {self.url}")
+        except Exception as e:
+            print(f"[WARNING] OpenCV初始化失败: {e}")
+            self.cap = cv2.VideoCapture(self.url)
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Cannot open video: {self.url}")
         
         # 获取视频 FPS
         fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -184,13 +178,14 @@ class VideoCaptureManager(QObject):
         self._running = True
         self._paused_streams = set()  # 暂停中的视频流ID
         
-    def add_video_stream(self, video_id, video_url, fps_limit=None, use_opencv_cuda=False):
+    def add_video_stream(self, video_id, video_url, fps_limit=None, use_opencv_cuda=False, use_gstreamer=False):
         """
         添加视频流
         video_id: 视频唯一标识
         video_url: RTSP地址或文件路径
         fps_limit: FPS限制（可选）
-        use_opencv_cuda: 是否在Jetson平台上使用OpenCV-CUDA解码（可选）
+        use_opencv_cuda: 兼容参数，不再使用
+        use_gstreamer: 是否尝试使用GStreamer硬件解码（仅在Jetson平台有效）
         创建buffer并传给reader
         """
         with QMutexLocker(self._mutex):
@@ -200,12 +195,12 @@ class VideoCaptureManager(QObject):
 
             try:
                 # 创建帧缓冲
-                buffer = FrameBuffer(maxsize=10)
+                buffer = FrameBuffer(maxsize=5)
                 
                 # 创建并启动捕获线程
                 capture_thread = threading.Thread(
                     target=self._capture_loop,
-                    args=(video_id, video_url, buffer, fps_limit, use_opencv_cuda),
+                    args=(video_id, video_url, buffer, fps_limit, use_opencv_cuda, use_gstreamer),
                     daemon=True
                 )
                 
@@ -271,7 +266,7 @@ class VideoCaptureManager(QObject):
             return buffer.get_latest()
         return None
 
-    def _capture_loop(self, video_id, video_url, buffer, fps_limit=None, use_opencv_cuda=False):
+    def _capture_loop(self, video_id, video_url, buffer, fps_limit=None, use_opencv_cuda=False, use_gstreamer=False):
         """
         单个视频流的捕获循环
         统一使用OpenCV模型：
@@ -283,7 +278,7 @@ class VideoCaptureManager(QObject):
         """
         try:
             # 创建视频读取器
-            reader = VideoReader(video_url, fps_limit=fps_limit, use_opencv_cuda=use_opencv_cuda)
+            reader = VideoReader(video_url, fps_limit=fps_limit, use_opencv_cuda=use_opencv_cuda, use_gstreamer=use_gstreamer)
             fps_dt = 1.0 / fps_limit if fps_limit else getattr(reader, 'fps_dt', 1/30)
             
             last_t = 0
@@ -315,7 +310,7 @@ class VideoCaptureManager(QObject):
                         # ⭐ 本地视频：播放完毕，需要循环播放
                         try:
                             reader.release()
-                            reader = VideoReader(video_url, fps_limit=fps_limit)
+                            reader = VideoReader(video_url, fps_limit=fps_limit, use_gstreamer=use_gstreamer)
                             last_t = 0
                             continue
                         except Exception as e:
@@ -335,7 +330,7 @@ class VideoCaptureManager(QObject):
                             break
                         try:
                             reader.release()
-                            reader = VideoReader(video_url, fps_limit=fps_limit)
+                            reader = VideoReader(video_url, fps_limit=fps_limit, use_gstreamer=use_gstreamer)
                             self.log_message.emit(f"[视频 {video_id}] 重连成功")
                         except Exception as e:
                             self.log_message.emit(f"[视频 {video_id}] 重连失败: {e}")
