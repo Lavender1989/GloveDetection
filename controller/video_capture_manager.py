@@ -68,38 +68,77 @@ class VideoReader:
         
         # 检查是否在Jetson平台上
         if VideoBackendSelector.is_jetson():
-            # Jetson平台默认使用OpenCV-CUDA
-            # 设置环境变量禁用GStreamer并启用CUDA加速
-            os.environ['OPENCV_VIDEOIO_PRIORITY_GSTREAMER'] = '0'  # 禁用GStreamer优先级
-            os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '100'  # 提高FFMPEG优先级
-            
-            # 根据视频URL判断可能的编码格式
-            # 这里可以根据需要扩展，目前支持H.264和H.265
-            if self.url.lower().endswith('.mp4') or 'rtsp://' in self.url.lower():
-                # 尝试自动检测或使用通用配置支持多种编码
-                # 对于H.265(HEVC)使用hevc_cuvid解码器
-                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;hevc_cuvid,h264_cuvid'  # 同时支持H.265和H.264
-            else:
-                # 默认配置
-                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'
+            # 检测视频编码格式
+            is_h265 = False
             try:
-                # 直接使用RTSP URL或文件路径，让OpenCV自动处理CUDA加速
-                # 显式指定使用FFMPEG后端
-                self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
-                if not self.cap.isOpened():
-                    # 如果FFMPEG后端失败，尝试不指定后端
+                # 尝试使用ffprobe检测视频编码格式
+                import subprocess
+                result = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0", 
+                     "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", 
+                     self.url],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    codec_name = result.stdout.strip().lower()
+                    is_h265 = codec_name == "hevc"
+            except Exception:
+                # 如果ffprobe不可用或检测失败，基于文件扩展名猜测
+                if self.url.lower().endswith(".mp4"):
+                    # 默认MP4可能是H.264或H.265，尝试H.265
+                    is_h265 = True
+            
+            if is_h265:
+                # Jetson平台上的H.265视频使用GStreamer硬件解码管道
+                print(f"[INFO] 使用GStreamer硬件解码H.265视频: {self.url}")
+                # 构建GStreamer管道
+                if self.is_file:
+                    # 本地文件
+                    gst_pipeline = (
+                        f"filesrc location={self.url} ! "
+                        "qtdemux ! h265parse ! "
+                        "nvv4l2decoder codec=h265 ! nvvidconv ! "
+                        "video/x-raw, format=(string)BGRx ! "
+                        "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                    )
+                else:
+                    # RTSP流
+                    gst_pipeline = (
+                        f"rtspsrc location={self.url} latency=0 ! "
+                        "rtph265depay ! h265parse ! "
+                        "nvv4l2decoder codec=h265 ! nvvidconv ! "
+                        "video/x-raw, format=(string)BGRx ! "
+                        "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                    )
+                
+                try:
+                    # 使用GStreamer管道创建VideoCapture
+                    self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                    if not self.cap.isOpened():
+                        raise RuntimeError(f"无法打开GStreamer管道: {gst_pipeline}")
+                except Exception as e:
+                    print(f"[WARNING] GStreamer硬件解码失败，回退到OpenCV: {e}")
+                    # 回退到普通OpenCV
                     self.cap = cv2.VideoCapture(self.url)
                     if not self.cap.isOpened():
-                        raise RuntimeError(f"Cannot open video: {url}")
-            except Exception as e:
-                # 如果OpenCV-CUDA失败，回退到直接使用RTSP URL
-                print(f"[WARNING] OpenCV-CUDA initialization failed, falling back to regular OpenCV: {e}")
-                # 回退时也显式禁用GStreamer
-                self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
-                if not self.cap.isOpened():
+                        raise RuntimeError(f"Cannot open video: {self.url}")
+            else:
+                # 非H.265视频，尝试使用OpenCV-CUDA
+                os.environ['OPENCV_VIDEOIO_PRIORITY_GSTREAMER'] = '0'  # 禁用GStreamer优先级
+                os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '100'  # 提高FFMPEG优先级
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'  # H.264
+                
+                try:
+                    self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+                    if not self.cap.isOpened():
+                        self.cap = cv2.VideoCapture(self.url)
+                        if not self.cap.isOpened():
+                            raise RuntimeError(f"Cannot open video: {self.url}")
+                except Exception as e:
+                    print(f"[WARNING] OpenCV-CUDA初始化失败，回退到regular OpenCV: {e}")
                     self.cap = cv2.VideoCapture(self.url)
                     if not self.cap.isOpened():
-                        raise RuntimeError(f"Cannot open video: {url}")
+                        raise RuntimeError(f"Cannot open video: {self.url}")
         else:
             # Windows平台使用默认的OpenCV
             self.cap = cv2.VideoCapture(self.url)
