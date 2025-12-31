@@ -19,7 +19,7 @@ from .video_capture_manager import VideoCaptureManager
 class DetectionThread(QThread):
     """新版检测线程，对接新版 MultiDetectorWorker（内部含输入线程 + 推理线程）"""
     log_signal = pyqtSignal(str)
-    alert_signal = pyqtSignal(str)
+    alert_signal = pyqtSignal(str, str)  # (message, video_name)
     frame_processed = pyqtSignal(int, QImage)
     rtsp_disconnected = pyqtSignal(int)
 
@@ -27,12 +27,14 @@ class DetectionThread(QThread):
         super().__init__()
         self.video_source = video_source
         self.capture_manager = capture_manager
-        # self.running = True
-        # self.paused = False
-        self.detector = None
-        
+
+        # 从MainController获取模型配置
+        self.enabled_models = None
+        self.model_confidence = None
+        self.model_thresholds = None
+        self.model_paths = None
         self.enabled_models = {'glove': True, 'head': False}
-        self.model_confidence = {'glove': 0.8, 'head': 0.8}
+        self.model_confidence = {'glove': 0.7, 'head': 0.7}
         self.model_thresholds = {'glove': 5, 'head': 10}
 
     def update_models(self, enabled, confidence, thresholds):
@@ -98,7 +100,7 @@ class DetectionThread(QThread):
 
         # 日志 & 报警信号
         self.detector.log_message.connect(self.log_signal)
-        self.detector.alert_message.connect(self.alert_signal)
+        self.detector.alert_message.connect(lambda msg: self.alert_signal.emit(msg, video_name))
         self.detector.proc_frame_ready.connect(
             lambda qimg: self.frame_processed.emit(video_id, qimg)
         )
@@ -108,7 +110,8 @@ class DetectionThread(QThread):
         ok = self.capture_manager.add_video_stream(
             video_id=video_id,
             video_url=video_url,
-            fps_limit=30
+            fps_limit=30,
+            use_opencv_cuda=True
         )
 
         if not ok:
@@ -148,8 +151,8 @@ class DetectionThread(QThread):
             )
             # 2️⃣ 冻结视频
             self.capture_manager.pause_video(self.video_source.id)
-            self.log_signal.emit(f"暂停处理视频: {self.video_source.name}")
-    
+            # 移除每个线程的日志输出，由MainController统一记录
+
     @pyqtSlot()
     def resume(self):
         if self.detector:
@@ -202,8 +205,8 @@ class MainController(QObject):
         }
         # 启用的模型
         self.enabled_models = {'glove': True,'head': False}
-        # 模型置信度
-        self.model_confidence = {'glove': 0.8,'head': 0.8}
+        # 模型置信度 - 修改为统一的默认值
+        self.model_confidence = {'glove': 0.7,'head': 0.7}
         # 模型报警阈值（连续检测到危险的帧数）
         self.model_thresholds = {'glove': 5,'head': 10}
 
@@ -251,6 +254,8 @@ class MainController(QObject):
         self.main_window.add_video_btn.clicked.connect(self.add_video_source)
         self.main_window.delete_video_btn.clicked.connect(self.delete_video_source)
         self.main_window.edit_video_btn.clicked.connect(self.edit_video_source)
+        # 全选/取消全选按钮
+        self.main_window.select_all_videos_btn.clicked.connect(self.toggle_select_all_videos)
 
         # 添加停止检测按钮连接
         # self.main_window.close_detection_btn.clicked.connect(self.stop_all_detections)
@@ -260,6 +265,42 @@ class MainController(QObject):
 
         # 双击编辑
         self.main_window.video_list.itemDoubleClicked.connect(self.on_video_item_double_clicked)
+
+    def toggle_select_all_videos(self):
+        """全选/取消全选视频源"""
+        try:
+            # 获取当前场景下所有视频源
+            videos = self.db.get_videos_by_scene(self.current_scene_id)
+            if not videos:
+                return
+
+            # 检查当前是否所有视频都已选中
+            all_selected = all(v.is_true for v in videos)
+
+            # 设置新的选择状态
+            new_state = not all_selected
+
+            # 更新数据库中的视频选择状态
+            for video in videos:
+                self.db.update_video_selection(video.id, new_state)
+
+            # 更新UI中的复选框状态
+            for i in range(self.main_window.video_list.topLevelItemCount()):
+                item = self.main_window.video_list.topLevelItem(i)
+                item.setCheckState(0, Qt.CheckState.Checked if new_state else Qt.CheckState.Unchecked)
+
+            # 如果是取消全选，关闭所有未选中视频的检测线程
+            if not new_state:
+                for video in videos:
+                    if video.id in self.detection_threads:
+                        # 停止检测线程
+                        self.stop_video_detection(video.id)
+
+            self.log(f"{'全选' if new_state else '取消全选'} 了 {len(videos)} 个视频源")
+
+        except Exception as e:
+            self.log(f"全选/取消全选操作失败: {str(e)}")
+            QMessageBox.critical(self.main_window, "错误", f"操作过程出错: {str(e)}")
 
     def load_scenes_to_combobox(self):
         """加载所有场景到下拉框"""
@@ -501,6 +542,10 @@ class MainController(QObject):
             self.db.update_video_selection(video_id, is_checked)
             video_name = item.text(1)
             self.log(f"{'选中' if is_checked else '取消选中'} 视频源: {video_name}")
+            
+            # 如果取消选择且视频有检测线程，关闭线程
+            if not is_checked and video_id in self.detection_threads:
+                self.stop_video_detection(video_id)
 
     def on_video_item_double_clicked(self, item, column):
         """双击编辑视频源"""
@@ -615,12 +660,16 @@ class MainController(QObject):
         # 5. 创建新线程并重连
         try:
             new_thread = DetectionThread(video, self.video_capture_manager)
+            # 传递模型配置
+            new_thread.enabled_models = self.enabled_models
+            new_thread.model_confidence = self.model_confidence
+            new_thread.model_thresholds = self.model_thresholds
             # 重新连接信号
             new_thread.log_signal.connect(self.log)
             new_thread.alert_signal.connect(lambda msg, vid=video.name: self.log(f"[报警] {vid}: {msg}"))
             new_thread.rtsp_disconnected.connect(self.handle_rtsp_disconnect)
             new_thread.frame_processed.connect(self.on_frame_processed)
-
+        
             self.detection_threads[video_id] = new_thread
             new_thread.start()
             self.log(f"RTSP重连成功: {video.name}(ID={video_id})已重启检测")
@@ -674,7 +723,7 @@ class MainController(QObject):
         try:
             width = qimage.width() if hasattr(qimage, 'width') else 'Unknown'
             height = qimage.height() if hasattr(qimage, 'height') else 'Unknown'
-            self.log(f"DEBUG: on_frame_processed: 收到视频ID {video_id} 的帧，尺寸: {width}x{height}")
+            # self.log(f"DEBUG: on_frame_processed: 收到视频ID {video_id} 的帧，尺寸: {width}x{height}")
             self.video_frame_updated.emit(video_id, qimage)
         except Exception as e:
             self.log(f"DEBUG: on_frame_processed 错误: {str(e)}")

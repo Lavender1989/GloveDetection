@@ -423,9 +423,9 @@ class ModelSelectDialog(QDialog):
         self.resize(400, 400)
         # 默认选择手套模型
         self.selected_models = selected_models or ['glove']
-        self.model_confidence = model_confidence or {'glove': 0.8, 'head': 0.8}
+        self.model_confidence = model_confidence or {'glove': 0.7, 'head': 0.7}
         # 添加报警阈值参数
-        self.model_thresholds = model_thresholds or {'glove': 5, 'head': 3}
+        self.model_thresholds = model_thresholds or {'glove': 3, 'head': 10}
         self.init_ui()
 
     def init_ui(self):

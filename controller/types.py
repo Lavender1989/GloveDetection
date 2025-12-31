@@ -31,12 +31,12 @@ class DetectionHistory:
         """检查并刷新历史记录"""
         current_time = time.time()
         if current_time - self.last_refresh_time > self.history_refresh_time:
-            print(f"\n=== 历史记录刷新 ===")
-            print(f"刷新历史记录，删除了 {len(self.history_boxes)} 个框")
-            print(f"====================")
+            # print(f"\n=== 历史记录刷新 ===")
+            # print(f"刷新历史记录，删除了 {len(self.history_boxes)} 个框")
+            # print(f"====================")
             self.history_boxes = []
             self.last_refresh_time = current_time
-            print(f"历史记录已刷新，当前时间: {time.ctime()}")
+            # print(f"历史记录已刷新，当前时间: {time.ctime()}")
     
     @staticmethod
     def _calculate_iou(box1: List[float], box2: List[float]) -> float:
@@ -115,10 +115,26 @@ class DetectionModel:
         # 检查CUDA可用性并设置设备
         self.device = 'cuda'
         self.model.to(self.device)
-        print(f"{self.name} 模型已加载到 {self.device} 设备")
+        # print(f"{self.name} 模型已加载到 {self.device} 设备")
         self.target_classes = target_classes
         self.conf_threshold = conf_threshold
         self.frame_threshold = frame_threshold
         self.trigger_mode = trigger_mode
         self.enabled = enabled  # 可由外部配置开关
-
+    
+    def release(self):
+        """释放模型占用的GPU内存"""
+        if hasattr(self, 'model'):
+            # 尝试释放模型
+            import torch
+            try:
+                # 清除模型占用的GPU内存
+                self.model.cpu()  # 将模型移回CPU
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception as e:
+                pass
+            finally:
+                # 置空模型引用
+                self.model = None

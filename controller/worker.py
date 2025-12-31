@@ -39,7 +39,8 @@ class MultiDetectorWorker(QObject):
                 name=name,
                 model_path=cfg['path'],
                 target_classes=cfg.get('target_classes', []),
-                conf_threshold=cfg.get('conf_threshold', 0.8),
+                # 优先使用models_config中的'conf'参数，其次是'conf_threshold'，最后是默认值0.5（与types.py保持一致）
+                conf_threshold=cfg.get('conf', cfg.get('conf_threshold', 0.5)),
                 frame_threshold=cfg.get('frame_threshold', 2),
                 trigger_mode=cfg.get('trigger_mode', 'area'),
                 enabled=cfg.get('enabled', True),
@@ -95,7 +96,7 @@ class MultiDetectorWorker(QObject):
         在此做后处理、绘图、UI 更新与报警触发
         """
         frame_shape = frame_np.shape if hasattr(frame_np, 'shape') else 'Unknown'
-        self.log_message.emit(f"DEBUG: Received inference result for video {self.video_id}, frame shape={frame_shape}")
+        # self.log_message.emit(f"DEBUG: Received inference result for video {self.video_id}, frame shape={frame_shape}")
         h, w = frame_np.shape[:2]
         if (self.postproc.area_boxes == []) and (self.view_index is not None) and not self._area_loaded:
             boxes, log_msg = load_area_for_view(self.view_index, w, h)
@@ -170,16 +171,16 @@ class MultiDetectorWorker(QObject):
             return
         # ⭐ 背压
         if self.inference_thread.is_busy():
-            self.log_message.emit(f"DEBUG: Inference thread is busy, skipping frame for video {self.video_id}")
+            # self.log_message.emit(f"DEBUG: Inference thread is busy, skipping frame for video {self.video_id}")
             return
         frame = self.capture_manager.get_latest_frame(self.video_id)
         if frame is None:
-            self.log_message.emit(f"DEBUG: No frame obtained from buffer for video {self.video_id}")
+            # self.log_message.emit(f"DEBUG: No frame obtained from buffer for video {self.video_id}")
             return
         frame_shape = frame.shape if hasattr(frame, 'shape') else 'Unknown'
-        self.log_message.emit(f"DEBUG: Got frame from buffer for video {self.video_id}, shape={frame_shape}")
+        # self.log_message.emit(f"DEBUG: Got frame from buffer for video {self.video_id}, shape={frame_shape}")
         self.inference_thread.add_task(frame)
-        self.log_message.emit(f"DEBUG: Sent frame to inference thread for video {self.video_id}")
+        # self.log_message.emit(f"DEBUG: Sent frame to inference thread for video {self.video_id}")
 
     @pyqtSlot()
     def start(self):
@@ -191,13 +192,13 @@ class MultiDetectorWorker(QObject):
     def pause(self):
         self._paused = True
         self.inference_thread._enable = False
-        self.log_message.emit("检测暂停")
+        # 移除日志输出，由MainController统一记录
 
     @pyqtSlot()
     def resume(self):
         self._paused = False
         self.inference_thread._enable = True
-        self.log_message.emit("检测恢复")
+        # 移除日志输出，由MainController统一记录
 
     @pyqtSlot()
     def stop(self):
@@ -218,4 +219,5 @@ class MultiDetectorWorker(QObject):
             cfg.frame_threshold = thresholds.get(name, cfg.frame_threshold)
         self._paused = False  # 恢复推理
         self.inference_thread._enable = True
+
 

@@ -16,7 +16,7 @@ class EmailSender:
         # self.smtp_port = 25
         self.smtp_port = 465  # 网易邮箱推荐使用465端口进行SSL加密连接
         self.sender_email = "wqr20011989@163.com"  # 发件人邮箱，这里是我自己的邮箱
-        self.sender_password = "PCvs53uSKA8cP2x"  # PCvs53uSKA8cP2xg 网易邮箱授权码,有效期180天，2025年12月1日开始生效，到期后需要更换
+        self.sender_password = "PCvs53uSKA8cP2xg"  # PCvs53uSKA8cP2xg 网易邮箱授权码,有效期180天，2025年12月1日开始生效，到期后需要更换
 
         # 三个管理员的邮箱地址（只有在这个列表里的邮箱地址才能收到邮件，需要增加的话，在下面新增就行）
         self.admin_emails = [

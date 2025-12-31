@@ -73,6 +73,18 @@ class Ui_MainWindow(QMainWindow):
         self.horizontalLayout_3 = QtWidgets.QHBoxLayout()
         self.horizontalLayout_3.setObjectName("horizontalLayout_3")
 
+        # 文件列表区域，包含视频列表和全选按钮
+        self.videoListLayout = QtWidgets.QVBoxLayout()
+        self.videoListLayout.setObjectName("videoListLayout")
+
+        # 全选按钮，放在视频列表上方
+        self.selectAllVideos = QtWidgets.QPushButton(parent=self.centralwidget)
+        self.selectAllVideos.setObjectName("selectAllVideos")
+        # 设置按钮大小
+        self.selectAllVideos.setMaximumSize(QtCore.QSize(150, 30))
+        self.selectAllVideos.setMinimumSize(QtCore.QSize(120, 25))
+        self.videoListLayout.addWidget(self.selectAllVideos)
+
         # 文件列表
         self.videoList = QtWidgets.QTreeWidget(parent=self.centralwidget)
         self.videoList.setObjectName("videoList")
@@ -88,7 +100,10 @@ class Ui_MainWindow(QMainWindow):
         self.videoList.setColumnWidth(4, 150)  # 邮箱列
         # 设置选择模式
         self.videoList.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.horizontalLayout_3.addWidget(self.videoList)
+        self.videoListLayout.addWidget(self.videoList)
+
+        # 将视频列表区域添加到水平布局
+        self.horizontalLayout_3.addLayout(self.videoListLayout)
 
         # 视频展示区
         self.videoDisplay = QtWidgets.QTabWidget(parent=self.centralwidget)
@@ -121,5 +136,6 @@ class Ui_MainWindow(QMainWindow):
         self.addVideo.setText(_translate("MainWindow", "添加视频来源"))
         self.deleteVideo.setText(_translate("MainWindow", "删除视频来源"))
         self.editVideo.setText(_translate("MainWindow", "编辑视频来源"))
+        self.selectAllVideos.setText(_translate("MainWindow", "全选/取消全选"))
         self.startDetection.setText(_translate("MainWindow", "开启检测"))
         self.closeDetection.setText(_translate("MainWindow", "停止检测"))

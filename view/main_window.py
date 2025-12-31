@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
         self.add_video_btn = self.ui.addVideo
         self.delete_video_btn = self.ui.deleteVideo
         self.edit_video_btn = self.ui.editVideo
+        self.select_all_videos_btn = self.ui.selectAllVideos  # 新增全选按钮
         self.video_list = self.ui.videoList
         self.video_display = self.ui.videoDisplay  # 这是QTabWidget控件
         self.log_box = self.ui.logBox
