@@ -69,22 +69,37 @@ class VideoReader:
         # 检查是否在Jetson平台上
         if VideoBackendSelector.is_jetson():
             # Jetson平台默认使用OpenCV-CUDA
-            # 设置环境变量启用CUDA加速
-            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'
+            # 设置环境变量禁用GStreamer并启用CUDA加速
+            os.environ['OPENCV_VIDEOIO_PRIORITY_GSTREAMER'] = '0'  # 禁用GStreamer优先级
+            os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '100'  # 提高FFMPEG优先级
+            
+            # 根据视频URL判断可能的编码格式
+            # 这里可以根据需要扩展，目前支持H.264和H.265
+            if self.url.lower().endswith('.mp4') or 'rtsp://' in self.url.lower():
+                # 尝试自动检测或使用通用配置支持多种编码
+                # 对于H.265(HEVC)使用hevc_cuvid解码器
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;hevc_cuvid,h264_cuvid'  # 同时支持H.265和H.264
+            else:
+                # 默认配置
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'video_codec;h264_cuvid'
             try:
                 # 直接使用RTSP URL或文件路径，让OpenCV自动处理CUDA加速
+                # 显式指定使用FFMPEG后端
                 self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
                 if not self.cap.isOpened():
-                    # 如果FFMPEG后端失败，尝试默认后端
+                    # 如果FFMPEG后端失败，尝试不指定后端
                     self.cap = cv2.VideoCapture(self.url)
                     if not self.cap.isOpened():
                         raise RuntimeError(f"Cannot open video: {url}")
             except Exception as e:
                 # 如果OpenCV-CUDA失败，回退到直接使用RTSP URL
                 print(f"[WARNING] OpenCV-CUDA initialization failed, falling back to regular OpenCV: {e}")
-                self.cap = cv2.VideoCapture(self.url)
+                # 回退时也显式禁用GStreamer
+                self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
                 if not self.cap.isOpened():
-                    raise RuntimeError(f"Cannot open video: {url}")
+                    self.cap = cv2.VideoCapture(self.url)
+                    if not self.cap.isOpened():
+                        raise RuntimeError(f"Cannot open video: {url}")
         else:
             # Windows平台使用默认的OpenCV
             self.cap = cv2.VideoCapture(self.url)
@@ -328,7 +343,8 @@ if __name__ == "__main__":
     buffer = FrameBuffer()
     cap_manager = VideoCaptureManager()
     video_id = "test_video"
-    video_url = r"D:\detect_video\original_Video\no_wearing_gloves\0911_1.mp4"
+    # video_url = r"D:\detect_video\original_Video\no_wearing_gloves\0911_1.mp4"
+    video_url = input("输入测试视频路径")
     cap_manager.add_video_stream(video_id, video_url)
 
     print("Capture manager started. Press Ctrl+C to stop.")
