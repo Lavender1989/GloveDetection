@@ -27,7 +27,7 @@ class VideoBackendSelector:
 # =============== 2. 线程安全 Buffer ===============
 class FrameBuffer:
     # 单个视频流的帧缓冲
-    def __init__(self, maxsize=5):
+    def __init__(self, maxsize=10):
         self.q = queue.Queue(maxsize=maxsize)
 
     def push(self, frame):

@@ -169,10 +169,10 @@ class MultiDetectorWorker(QObject):
             return
         if self._stopped or self._paused:
             return
-        # ⭐ 背压
-        if self.inference_thread.is_busy():
-            # self.log_message.emit(f"DEBUG: Inference thread is busy, skipping frame for video {self.video_id}")
-            return
+        # ⭐ 移除背压逻辑：即使推理线程忙碌，也将帧添加到队列等待处理
+        # if self.inference_thread.is_busy():
+        #     # self.log_message.emit(f"DEBUG: Inference thread is busy, skipping frame for video {self.video_id}")
+        #     return
         frame = self.capture_manager.get_latest_frame(self.video_id)
         if frame is None:
             # self.log_message.emit(f"DEBUG: No frame obtained from buffer for video {self.video_id}")
@@ -221,3 +221,4 @@ class MultiDetectorWorker(QObject):
         self.inference_thread._enable = True
 
 
+

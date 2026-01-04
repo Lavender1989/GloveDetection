@@ -18,11 +18,11 @@ class InferenceThread(QThread):
     inference_done = pyqtSignal(object, object)  # frame_np, raw_results
     inference_error = pyqtSignal(str)
 
-    def __init__(self, models: Dict[str, 'DetectionModel'], queue_maxsize: int = 2, parent=None):
+    def __init__(self, models: Dict[str, 'DetectionModel'], queue_maxsize: int = 10, parent=None):
         super().__init__(parent)
         self.models = models
         self._running = True
-        self._q = queue.Queue(maxsize=queue_maxsize)  # 减少队列大小，降低内存使用
+        self._q = queue.Queue(maxsize=queue_maxsize)  # 增加队列大小，提高缓存能力
         self._busy = False   # 忙碌态
         self._enable = True  # 推理线程是否启用
         
@@ -37,7 +37,7 @@ class InferenceThread(QThread):
 
     @pyqtSlot(object)
     def add_task(self, frame_np: np.ndarray) -> bool:
-        """非阻塞地添加任务；若队列满则尝试丢旧帧并入队（保持实时性）"""
+        """非阻塞地添加任务；若队列满则尝试等待一小段时间再入队（减少丢帧）"""
         
         if not frame_np.any():
             return False
