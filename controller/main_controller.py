@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import QTreeWidgetItem, QMessageBox
 from model.db import Database, VideoSource
 from view.dialogs import VideoSourceDialog, SceneDialog
 from .video_capture_manager import VideoCaptureManager
+# 导入默认配置
+from config.defaults import DEFAULT_ENABLED_MODELS, DEFAULT_MODEL_CONFIDENCE, DEFAULT_MODEL_THRESHOLDS
 
 
 class DetectionThread(QThread):
@@ -33,9 +35,10 @@ class DetectionThread(QThread):
         self.model_confidence = None
         self.model_thresholds = None
         self.model_paths = None
-        self.enabled_models = {'glove': True, 'head': False}
-        self.model_confidence = {'glove': 0.7, 'head': 0.7}
-        self.model_thresholds = {'glove': 5, 'head': 10}
+        # 使用统一的默认配置
+        self.enabled_models = DEFAULT_ENABLED_MODELS
+        self.model_confidence = DEFAULT_MODEL_CONFIDENCE
+        self.model_thresholds = DEFAULT_MODEL_THRESHOLDS
 
     def update_models(self, enabled, confidence, thresholds):
         # MainController动态更新模型配置
@@ -70,7 +73,7 @@ class DetectionThread(QThread):
                 'target_classes': ['bare'],
                 'conf': self.model_confidence['glove'],
                 'threshold': self.model_thresholds['glove'],
-                'frame_threshold': 10,
+                'frame_threshold': self.model_thresholds['glove'],
                 'trigger_mode': 'area',
                 'enabled': self.enabled_models['glove']
             },
@@ -79,7 +82,7 @@ class DetectionThread(QThread):
                 'target_classes': ['touch'],
                 'conf': self.model_confidence['head'],
                 'threshold': self.model_thresholds['head'],
-                'frame_threshold': 10,
+                'frame_threshold': self.model_thresholds['head'],
                 'trigger_mode': 'any',
                 'enabled': self.enabled_models['head']
             }
@@ -204,11 +207,11 @@ class MainController(QObject):
             'head': get_resource_path("../model/head/best.pt")    # 头部模型
         }
         # 启用的模型
-        self.enabled_models = {'glove': True,'head': False}
-        # 模型置信度 - 修改为统一的默认值
-        self.model_confidence = {'glove': 0.7,'head': 0.7}
+        self.enabled_models = DEFAULT_ENABLED_MODELS
+        # 模型置信度 - 使用统一的默认值
+        self.model_confidence = DEFAULT_MODEL_CONFIDENCE
         # 模型报警阈值（连续检测到危险的帧数）
-        self.model_thresholds = {'glove': 5,'head': 10}
+        self.model_thresholds = DEFAULT_MODEL_THRESHOLDS
 
         # 初始化日志模型
         self.log_model = QStandardItemModel()
