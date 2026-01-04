@@ -119,10 +119,45 @@ class ModelManager:
         """获取或创建模型实例"""
         with self.model_lock:
             if model_path not in self.models:
-                # 加载新模型
-                model = YOLO(model_path)
-                model.to(device)
-                self.models[model_path] = model
+                # 加载新模型前先清理GPU内存
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    # 打印内存使用情况
+                    print(f"[DEBUG] 加载模型前 GPU内存使用: {torch.cuda.memory_allocated()/1024/1024:.2f} MB, 缓存: {torch.cuda.memory_reserved()/1024/1024:.2f} MB")
+                
+                # 尝试使用更小的模型配置加载
+                try:
+                    # 降低模型加载时的内存需求
+                    if device == 'cuda':
+                        # 先在CPU上加载模型，然后再转移到GPU
+                        model = YOLO(model_path)
+                        print(f"[DEBUG] 模型在CPU上加载成功，准备转移到GPU")
+                        model.to(device)
+                    else:
+                        model = YOLO(model_path)
+                        model.to(device)
+                    
+                    self.models[model_path] = model
+                    
+                    # 打印内存使用情况
+                    if torch.cuda.is_available():
+                        print(f"[DEBUG] 加载模型后 GPU内存使用: {torch.cuda.memory_allocated()/1024/1024:.2f} MB, 缓存: {torch.cuda.memory_reserved()/1024/1024:.2f} MB")
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        # 如果内存不足，尝试更激进的内存优化
+                        print(f"[DEBUG] 内存不足，尝试更激进的内存优化")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        # 强制使用CPU
+                        print(f"[DEBUG] 强制使用CPU加载模型")
+                        model = YOLO(model_path)
+                        model.to('cpu')
+                        self.models[model_path] = model
+                        device = 'cpu'  # 更新设备为CPU
+                    else:
+                        raise
             return self.models[model_path]
     
     def release_all_models(self):
@@ -178,7 +213,20 @@ class DetectionModel:
         for module in self.model.modules():
             if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
                 module.track_running_stats = False
-    
+        
+        # 更新设备为模型实际使用的设备
+        # 检查模型的设备
+        if hasattr(self.model, 'device'):
+            self.device = self.model.device
+        else:
+            # 对于YOLO模型，检查模型的预测头设备
+            try:
+                first_param = next(self.model.parameters())
+                self.device = first_param.device
+            except StopIteration:
+                pass  # 如果没有参数，保持原设备设置
+        
+        print(f"[DEBUG] {self.name} 模型设备: {self.device}")
     def release(self):
         """释放模型占用的GPU内存（实际由ModelManager管理）"""
         # 这里不需要释放模型，因为模型是共享的

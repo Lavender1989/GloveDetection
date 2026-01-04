@@ -120,18 +120,29 @@ class InferenceThread(QThread):
                                 y = model_cfg.model(
                                     frame,
                                     conf=model_cfg.conf_threshold,
-                                    device=model_cfg.device,
-                                    imgsz=320,  # 降低输入分辨率
-                                    half=True,  # 使用半精度推理
+                                    device=model_cfg.device,  # 使用模型实际加载的设备
+                                    imgsz=320,  # 降低输入分辨率以减少内存使用
+                                    half=model_cfg.device == 'cuda',  # 只有在GPU上才使用半精度
                                     batch=1,    # 批量大小为1
-                                    verbose=False
+                                    verbose=False,
+                                    # 减少数据增强，降低内存和计算需求
+                                    augment=False,
+                                    # 不保存轨迹，减少内存使用
+                                    save=False,
+                                    # 使用更小的iou阈值
+                                    iou=0.45
                                 )[0]
                             raw_results[name] = y
                         except Exception as e:
                             raw_results[name] = None
-                            self.inference_error.emit(str(e))
+                            self.inference_error.emit(f"推理错误 ({name}): {str(e)}")
                 finally:
                     self._busy = False   # ⭐ 推理结束
+                    
+                    # 推理完成后清理临时GPU内存
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
             
             self.inference_done.emit(frame, raw_results)
             
