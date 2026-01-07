@@ -55,12 +55,12 @@ class FrameBuffer:
 class VideoReader:
     def __init__(self, url, fps_limit=None, use_opencv_cuda=False, use_gstreamer=False):
         """
-        统一使用CPU的OpenCV VideoReader
+        视频读取器，支持多种后端
         
         参数：
         - url: 视频路径或RTSP地址
         - fps_limit: FPS限制
-        - use_opencv_cuda: 兼容参数，不再使用
+        - use_opencv_cuda: 是否使用OpenCV CUDA加速（需要编译时启用CUDA）
         - use_gstreamer: 是否尝试使用GStreamer硬件解码（仅在Jetson平台有效）
         """
         self.url = url
@@ -114,6 +114,27 @@ class VideoReader:
                             "video/x-raw, format=(string)BGRx ! "
                             "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
                         )
+                else:
+                    # H.264视频使用GStreamer硬件解码管道
+                    print(f"[INFO] 使用GStreamer硬件解码H.264视频: {self.url}")
+                    if self.is_file:
+                        # 本地文件
+                        gst_pipeline = (
+                            f"filesrc location={self.url} ! "
+                            "qtdemux ! h264parse ! "
+                            "nvv4l2decoder codec=h264 ! nvvidconv ! "
+                            "video/x-raw, format=(string)BGRx ! "
+                            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                        )
+                    else:
+                        # RTSP流
+                        gst_pipeline = (
+                            f"rtspsrc location={self.url} latency=0 ! "
+                            "rtph264depay ! h264parse ! "
+                            "nvv4l2decoder codec=h264 ! nvvidconv ! "
+                            "video/x-raw, format=(string)BGRx ! "
+                            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+                        )
                     
                     # 使用GStreamer管道创建VideoCapture
                     self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
@@ -124,9 +145,35 @@ class VideoReader:
                         self.fps_dt = 1.0 / (fps if 1 < fps <= 120 else 30)
                         return
                     else:
-                        print("[WARNING] GStreamer硬件解码管道打开失败，回退到OpenCV")
+                        print("[WARNING] GStreamer硬件解码管道打开失败，尝试OpenCV CUDA")
             except Exception as e:
-                print(f"[WARNING] GStreamer硬件解码初始化失败: {e}")
+                print(f"[WARNING] GStreamer硬件解码初始化失败: {e}，尝试OpenCV CUDA")
+        
+        # 尝试使用OpenCV CUDA VideoCapture（如果启用）
+        if use_opencv_cuda and VideoBackendSelector.is_jetson():
+            try:
+                print(f"[INFO] 尝试使用OpenCV CUDA加速视频读取: {self.url}")
+                
+                # 检查是否支持CUDA
+                if not cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    raise RuntimeError("OpenCV CUDA不可用，请确保OpenCV编译时启用了CUDA支持")
+                
+                # 创建CUDA VideoCapture
+                self.cap = cv2.VideoCapture(self.url, cv2.CAP_CUDA)
+                
+                # 设置CUDA设备
+                cv2.cuda.setDevice(0)
+                
+                if self.cap.isOpened():
+                    print("[INFO] OpenCV CUDA视频读取初始化成功")
+                    # 获取视频 FPS
+                    fps = self.cap.get(cv2.CAP_PROP_FPS)
+                    self.fps_dt = 1.0 / (fps if 1 < fps <= 120 else 30)
+                    return
+                else:
+                    print("[WARNING] OpenCV CUDA视频读取打开失败，回退到普通OpenCV")
+            except Exception as e:
+                print(f"[WARNING] OpenCV CUDA初始化失败: {e}，回退到普通OpenCV")
         
         # 统一使用基本的OpenCV VideoCapture（默认方式）
         try:
