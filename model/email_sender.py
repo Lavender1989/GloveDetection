@@ -18,10 +18,16 @@ class EmailSender:
         self.sender_email = "wqr20011989@163.com"  # 发件人邮箱，这里是我自己的邮箱
         self.sender_password = "PCvs53uSKA8cP2xg"  # PCvs53uSKA8cP2xg 网易邮箱授权码,有效期180天，2025年12月1日开始生效，到期后需要更换
 
-        # 三个管理员的邮箱地址（只有在这个列表里的邮箱地址才能收到邮件，需要增加的话，在下面新增就行）
+        # 管理员的邮箱地址（只有在这个列表里的邮箱地址才能收到邮件，需要增加的话，在下面新增就行）
         self.admin_emails = [
             # "1907872557@qq.com",
-            "903466339@qq.com"
+            "903466339@qq.com",
+            "Honglingxiang@kaifa.cn",
+            "xiaoyuzhong@kaifa.cn",
+            "453851508@qq.com",
+            "pqashifta@kaifa.cn",
+            "xuhongdong@kaifa.cn",
+            "jingming1@kaifa.cn"
         ]
 
     def send_alert_email(self, video_name, alert_message, alert_frame, selected_emails=None, original_frame=None, video_path=None):
