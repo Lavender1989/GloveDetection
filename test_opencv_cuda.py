@@ -69,7 +69,6 @@ def main():
     print(f"CUDA可用: {cv2.cuda.getCudaEnabledDeviceCount() > 0}")
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
         print(f"CUDA设备数量: {cv2.cuda.getCudaEnabledDeviceCount()}")
-        print(f"CUDA设备名称: {cv2.cuda.DeviceInfo(0).name()}")
     
     # 检查是否是Jetson平台
     print(f"Jetson平台: {VideoBackendSelector.is_jetson()}")
@@ -101,3 +100,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

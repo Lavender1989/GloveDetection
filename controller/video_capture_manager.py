@@ -158,8 +158,13 @@ class VideoReader:
                 if not cv2.cuda.getCudaEnabledDeviceCount() > 0:
                     raise RuntimeError("OpenCV CUDA不可用，请确保OpenCV编译时启用了CUDA支持")
                 
-                # 创建CUDA VideoCapture
-                self.cap = cv2.VideoCapture(self.url, cv2.CAP_CUDA)
+                # 检查CAP_CUDA是否可用
+                if hasattr(cv2, 'CAP_CUDA'):
+                    # 创建CUDA VideoCapture
+                    self.cap = cv2.VideoCapture(self.url, cv2.CAP_CUDA)
+                else:
+                    # 如果CAP_CUDA不可用，使用普通VideoCapture但后续可以使用CUDA处理
+                    self.cap = cv2.VideoCapture(self.url)
                 
                 # 设置CUDA设备
                 cv2.cuda.setDevice(0)
