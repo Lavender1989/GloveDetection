@@ -148,38 +148,7 @@ class VideoReader:
                         print("[WARNING] GStreamer硬件解码管道打开失败，尝试OpenCV CUDA")
             except Exception as e:
                 print(f"[WARNING] GStreamer硬件解码初始化失败: {e}，尝试OpenCV CUDA")
-        
-        # 尝试使用OpenCV CUDA VideoCapture（如果启用）
-        if use_opencv_cuda and VideoBackendSelector.is_jetson():
-            try:
-                print(f"[INFO] 尝试使用OpenCV CUDA加速视频读取: {self.url}")
-                
-                # 检查是否支持CUDA
-                if not cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                    raise RuntimeError("OpenCV CUDA不可用，请确保OpenCV编译时启用了CUDA支持")
-                
-                # 检查CAP_CUDA是否可用
-                if hasattr(cv2, 'CAP_CUDA'):
-                    # 创建CUDA VideoCapture
-                    self.cap = cv2.VideoCapture(self.url, cv2.CAP_CUDA)
-                else:
-                    # 如果CAP_CUDA不可用，使用普通VideoCapture但后续可以使用CUDA处理
-                    self.cap = cv2.VideoCapture(self.url)
-                
-                # 设置CUDA设备
-                cv2.cuda.setDevice(0)
-                
-                if self.cap.isOpened():
-                    print("[INFO] OpenCV CUDA视频读取初始化成功")
-                    # 获取视频 FPS
-                    fps = self.cap.get(cv2.CAP_PROP_FPS)
-                    self.fps_dt = 1.0 / (fps if 1 < fps <= 120 else 30)
-                    return
-                else:
-                    print("[WARNING] OpenCV CUDA视频读取打开失败，回退到普通OpenCV")
-            except Exception as e:
-                print(f"[WARNING] OpenCV CUDA初始化失败: {e}，回退到普通OpenCV")
-        
+             
         # 统一使用基本的OpenCV VideoCapture（默认方式）
         try:
             self.cap = cv2.VideoCapture(self.url)
