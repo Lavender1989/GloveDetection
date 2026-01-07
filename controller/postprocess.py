@@ -124,7 +124,7 @@ class PostProcessor:
                 cls = det.class_name
                 if cls not in self.detection_histories:
                     self.detection_histories[cls] = DetectionHistory()
-                if self.detection_histories[cls].is_new_detection(det.bbox, scale_factor=2.0):
+                if self.detection_histories[cls].is_new_detection(det.bbox, scale_factor=3.0):
                     need_new_alert = True
                     new_detections.setdefault(cls, []).append(det)
             if need_new_alert:
@@ -150,3 +150,4 @@ class PostProcessor:
                 pass
         th = threading.Thread(target=_send, daemon=True)
         th.start()
+

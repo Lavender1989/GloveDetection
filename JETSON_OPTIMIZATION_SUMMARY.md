@@ -5,7 +5,6 @@
 本文档详细总结了在Jetson平台上优化视频流处理的实现方案，包括：
 - RTSP视频流的硬件加速读取和解码
 - 多视频流共享检测模型的内存优化
-- 异步处理架构的实现
 
 这些优化使系统能够在资源受限的Jetson平台上高效处理多路视频流。
 
@@ -90,39 +89,6 @@ elif is_h264:
     )
 ```
 
-### 2.4 OpenCV CUDA加速
-
-当GStreamer不可用时，系统会尝试使用OpenCV CUDA进行加速：
-
-```python
-# 尝试使用OpenCV CUDA VideoCapture（如果启用）
-if use_opencv_cuda and VideoBackendSelector.is_jetson():
-    try:
-        print(f"[INFO] 尝试使用OpenCV CUDA加速视频读取: {self.url}")
-        
-        # 检查是否支持CUDA
-        if not cv2.cuda.getCudaEnabledDeviceCount() > 0:
-            raise RuntimeError("OpenCV CUDA不可用，请确保OpenCV编译时启用了CUDA支持")
-        
-        # 检查CAP_CUDA是否可用（兼容性处理）
-        if hasattr(cv2, 'CAP_CUDA'):
-            # 创建CUDA VideoCapture
-            self.cap = cv2.VideoCapture(self.url, cv2.CAP_CUDA)
-        else:
-            # 如果CAP_CUDA不可用，使用普通VideoCapture但后续可以使用CUDA处理
-            self.cap = cv2.VideoCapture(self.url)
-        
-        # 设置CUDA设备
-        cv2.cuda.setDevice(0)
-        
-        if self.cap.isOpened():
-            print("[INFO] OpenCV CUDA视频读取初始化成功")
-            return
-        else:
-            print("[WARNING] OpenCV CUDA视频读取打开失败，回退到普通OpenCV")
-    except Exception as e:
-        print(f"[WARNING] OpenCV CUDA初始化失败: {e}，回退到普通OpenCV")
-```
 
 ### 2.5 普通OpenCV回退
 
@@ -377,6 +343,5 @@ python test_opencv_cuda.py rtsp://admin:password@192.168.1.100:554/Streaming/Cha
 1. **硬件加速读取**：通过GStreamer和OpenCV CUDA实现硬件加速
 2. **智能回退机制**：确保在不同环境下都能可靠读取视频流
 3. **模型共享优化**：多视频流共享同一个检测模型，节省内存和加载时间
-4. **异步处理架构**：提高系统吞吐量和响应速度
 
 这些优化使系统能够在资源受限的Jetson平台上高效处理多路视频流，同时保持良好的兼容性和可靠性。
