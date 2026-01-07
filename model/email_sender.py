@@ -21,11 +21,6 @@ class EmailSender:
         # 三个管理员的邮箱地址（只有在这个列表里的邮箱地址才能收到邮件，需要增加的话，在下面新增就行）
         self.admin_emails = [
             # "1907872557@qq.com",
-            "Honglingxiang@kaifa.cn",
-            "XinHuZhang@kaifa.cn",
-            "ShaoHuawang1@kaifa.cn",
-            "xiaoyuzhong@kaifa.cn",
-            "wqr20011989@163.com",
             "903466339@qq.com"
         ]
 
@@ -43,8 +38,8 @@ class EmailSender:
         """
         try:
             # 处理收件人列表
-            if selected_emails is None:
-                # 如果没有指定收件人，使用所有管理员邮箱
+            if selected_emails is None or selected_emails == "":
+                # 如果没有指定收件人或收件人为空字符串，使用所有管理员邮箱
                 recipients = self.admin_emails
             else:
                 # 处理逗号分隔的多个邮箱
