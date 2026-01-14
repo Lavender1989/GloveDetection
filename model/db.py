@@ -113,11 +113,11 @@ class Database:
         if count == 0:
             default_emails = [
                 ("管理员1", "903466339@qq.com"),
-                ("管理员2", "Honglingxiang@kaifa.cn"),
-                ("管理员3", "XinHuZhang@kaifa.cn"),
-                ("管理员4", "ShaoHuawang1@kaifa.cn"),
-                ("管理员5", "xiaoyuzhong@kaifa.cn"),
-                ("管理员6", "wqr20011989@163.com")
+                # ("管理员2", "Honglingxiang@kaifa.cn"),
+                # ("管理员3", "XinHuZhang@kaifa.cn"),
+                # ("管理员4", "ShaoHuawang1@kaifa.cn"),
+                # ("管理员5", "xiaoyuzhong@kaifa.cn"),
+                # ("管理员6", "wqr20011989@163.com")
             ]
             
             for name, email in default_emails:

@@ -22,12 +22,13 @@ class EmailSender:
         self.admin_emails = [
             # "1907872557@qq.com",
             "903466339@qq.com",
-            "Honglingxiang@kaifa.cn",
-            "xiaoyuzhong@kaifa.cn",
-            "453851508@qq.com",
-            "pqashifta@kaifa.cn",
-            "xuhongdong@kaifa.cn",
-            "jingming1@kaifa.cn"
+            # "Honglingxiang@kaifa.cn",
+            # "xiaoyuzhong@kaifa.cn",
+            # "453851508@qq.com",
+            # "pqashifta@kaifa.cn",
+            # "xuhongdong@kaifa.cn",
+            # "jingming1@kaifa.cn",
+            "PQASHIFTB@kaifa.cn",
         ]
 
     def send_alert_email(self, video_name, alert_message, alert_frame, selected_emails=None, original_frame=None, video_path=None):

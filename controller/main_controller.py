@@ -93,7 +93,7 @@ class DetectionThread(QThread):
             models_config=models_config,
             video_name=video_name,
             view_index=view_index,
-            alert_email="",
+            alert_email=self.video_source.alert_email,
             capture_manager=self.capture_manager,
             video_id=video_id
         )
