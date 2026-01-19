@@ -536,6 +536,13 @@ class MainController(QObject):
                 if self.db.update_video_source(updated_video):
                     self.log(f"更新视频源成功: {updated_video.name}")
                     self.load_videos_for_current_scene()
+                    # 检查是否有对应的检测线程在运行，如果有，更新其邮箱信息
+                    if updated_video.id in self.detection_threads:
+                        thread = self.detection_threads[updated_video.id]
+                        thread.detector.alert_email = updated_video.alert_email
+                        thread.detector._current_email = updated_video.alert_email
+                        thread.detector._email_info_logged = False  # 重置标志，以便重新显示邮箱信息
+                        self.log(f"已更新视频源 {updated_video.name} 的检测线程邮箱信息")
 
     def on_video_item_changed(self, item, column):
         """处理视频项选择状态变化"""

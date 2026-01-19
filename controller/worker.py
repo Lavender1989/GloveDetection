@@ -51,6 +51,8 @@ class MultiDetectorWorker(QObject):
         self.alert_email = alert_email
         self.capture_manager = capture_manager
         self.video_id = video_id
+        # 存储当前邮箱信息，用于检测变化
+        self._current_email = alert_email
 
         # --- tools ---
         self.postproc = PostProcessor(self.models, area_boxes=[], alert_email=self.alert_email)
@@ -73,6 +75,8 @@ class MultiDetectorWorker(QObject):
         # 区域加载标志位
         self._area_loaded = False
         self._view_not_found_logged = False
+        # 邮箱信息显示标志位
+        self._email_info_logged = False
 
         self.log_message.emit(f"MultiDetectorWorker 初始化完成，模型: {list(self.models.keys())}")
 
@@ -178,6 +182,21 @@ class MultiDetectorWorker(QObject):
             # self.log_message.emit(f"DEBUG: No frame obtained from buffer for video {self.video_id}")
             return
         frame_shape = frame.shape if hasattr(frame, 'shape') else 'Unknown'
+        # 检查邮箱是否发生变化
+        if self.alert_email != self._current_email:
+            old_email = self._current_email if self._current_email else "未设置"
+            new_email = self.alert_email if self.alert_email else "未设置"
+            self.log_message.emit(f"报警邮箱已更新: {old_email} → {new_email}")
+            self._current_email = self.alert_email
+            # 更新postproc中的邮箱信息
+            self.postproc.alert_email = self.alert_email
+        # 只在第一次处理视频流时显示邮箱信息
+        elif not self._email_info_logged:
+            if self.alert_email:
+                self.log_message.emit(f"当前视频流报警邮箱: {self.alert_email}")
+            else:
+                self.log_message.emit("当前视频流未设置报警邮箱，将使用默认管理员邮箱")
+            self._email_info_logged = True
         # self.log_message.emit(f"DEBUG: Got frame from buffer for video {self.video_id}, shape={frame_shape}")
         self.inference_thread.add_task(frame)
         # self.log_message.emit(f"DEBUG: Sent frame to inference thread for video {self.video_id}")
@@ -221,4 +240,4 @@ class MultiDetectorWorker(QObject):
         self.inference_thread._enable = True
 
 
-
+

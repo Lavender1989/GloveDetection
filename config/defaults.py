@@ -8,7 +8,7 @@ DEFAULT_ENABLED_MODELS = {
 }
 
 DEFAULT_MODEL_CONFIDENCE = {
-    'glove': 0.8,
+    'glove': 0.85,
     'head': 0.7
 }
 
