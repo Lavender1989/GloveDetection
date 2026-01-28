@@ -3,6 +3,7 @@
 ## 1. 概述
 
 本文档详细总结了在Jetson平台上优化视频流处理的实现方案，包括：
+
 - RTSP视频流的硬件加速读取和解码
 - 多视频流共享检测模型的内存优化
 
@@ -22,7 +23,7 @@
 │                                                 │
 │ 2. 检查配置 → 使用哪种解码方式                   │
 │    ├── 启用GStreamer → 尝试硬件解码             │
-│    └── 启用OpenCV CUDA → 尝试CUDA加速           │
+│    └        │
 │                                                 │
 │ 3. 实现回退 → 确保视频流可用                     │
 │    ├── GStreamer硬件解码 → 失败则尝试OpenCV CUDA │
@@ -33,7 +34,7 @@
 
 ### 2.2 平台检测
 
-通过`VideoBackendSelector`类实现平台检测：
+通过 `VideoBackendSelector`类实现平台检测：
 
 ```python
 class VideoBackendSelector:
@@ -48,6 +49,7 @@ class VideoBackendSelector:
 在Jetson平台上优先使用GStreamer进行硬件解码：
 
 #### H.265视频解码
+
 ```python
 # Jetson平台上的H.265视频使用GStreamer硬件解码管道
 print(f"[INFO] 使用GStreamer硬件解码H.265视频: {self.url}")
@@ -74,6 +76,7 @@ if is_h265:
 ```
 
 #### H.264视频解码
+
 ```python
 # H.264解码管道
 elif is_h264:
@@ -88,7 +91,6 @@ elif is_h264:
         "appsink drop=1"
     )
 ```
-
 
 ### 2.5 普通OpenCV回退
 
@@ -116,13 +118,14 @@ except Exception as e:
 ### 3.1 问题分析
 
 传统实现中，每个视频流都会加载自己的检测模型，导致：
+
 - 内存占用过高（每个模型约100-200MB）
 - 模型初始化时间长
 - GPU内存碎片化
 
 ### 3.2 优化方案
 
-系统实现了`MultiDetectorWorker`类，允许多个视频流共享同一个检测模型：
+系统实现了 `MultiDetectorWorker`类，允许多个视频流共享同一个检测模型：
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -195,12 +198,12 @@ self.inference_thread.start()
 def on_tick(self):
     if not self._running or self._stopped or self._paused:
         return
-    
+  
     # 从视频源获取最新帧
     frame = self.capture_manager.get_latest_frame(self.video_id)
     if frame is None:
         return
-    
+  
     # 将帧添加到推理任务队列
     self.inference_thread.add_task(frame)
 ```
@@ -216,7 +219,7 @@ def attach_video_source(self, capture_manager, video_id):
     """
     self.capture_manager = capture_manager
     self.video_id = video_id
-    
+  
     # 创建调度器
     self.scheduler = Scheduler(target_fps=30.0, parent=self)
     self.scheduler.tick.connect(self.on_tick)
@@ -229,33 +232,33 @@ def attach_video_source(self, capture_manager, video_id):
 
 在Jetson平台上进行的测试显示了显著的性能提升：
 
-| 配置 | 平均FPS | 资源使用 | 特点 |
-|------|---------|----------|------|
-| 默认配置 | 42.07 | CPU为主 | 兼容性最好 |
-| OpenCV CUDA | 44.03 | GPU加速 | 性能最优 |
-| GStreamer | 25.32 | 硬件解码 | 释放CPU资源 |
-| CUDA + GStreamer | 25.15 | 硬件解码 | 优先使用GStreamer |
+| 配置             | 平均FPS | 资源使用 | 特点              |
+| ---------------- | ------- | -------- | ----------------- |
+| 默认配置         | 42.07   | CPU为主  | 兼容性最好        |
+| OpenCV CUDA      | 44.03   | GPU加速  | 性能最优          |
+| GStreamer        | 25.32   | 硬件解码 | 释放CPU资源       |
+| CUDA + GStreamer | 25.15   | 硬件解码 | 优先使用GStreamer |
 
 ### 4.2 资源节省
 
 通过模型共享机制，系统资源使用情况得到显著改善：
 
-| 指标 | 传统实现 | 优化后 | 提升 |
-|------|----------|--------|------|
-| 内存占用 | 每个视频流100-200MB | 共享模型约200MB | 50%+ |
-| 模型加载时间 | 每个视频流2-3秒 | 一次加载2-3秒 | 大幅减少 |
-| GPU内存碎片 | 严重 | 轻微 | 显著改善 |
+| 指标         | 传统实现            | 优化后          | 提升     |
+| ------------ | ------------------- | --------------- | -------- |
+| 内存占用     | 每个视频流100-200MB | 共享模型约200MB | 50%+     |
+| 模型加载时间 | 每个视频流2-3秒     | 一次加载2-3秒   | 大幅减少 |
+| GPU内存碎片  | 严重                | 轻微            | 显著改善 |
 
 ## 5. 代码结构与关键文件
 
 ### 5.1 核心文件
 
-| 文件名 | 功能描述 |
-|--------|----------|
+| 文件名                                  | 功能描述                 |
+| --------------------------------------- | ------------------------ |
 | `controller/video_capture_manager.py` | 视频流读取和硬件加速实现 |
-| `controller/worker.py` | 多视频流共享模型实现 |
-| `controller/inference_thread.py` | 异步推理线程实现 |
-| `controller/scheduler.py` | 任务调度器实现 |
+| `controller/worker.py`                | 多视频流共享模型实现     |
+| `controller/inference_thread.py`      | 异步推理线程实现         |
+| `controller/scheduler.py`             | 任务调度器实现           |
 
 ### 5.2 测试脚本
 
@@ -336,7 +339,34 @@ python test_opencv_cuda.py
 python test_opencv_cuda.py rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101
 ```
 
-## 8. 结论
+## 8. 常见问题与解答
+
+### 8.1 视频流识别与结果对应
+
+**问题**：每个视频流的检测使用的是一个线程，那帧缓冲队列不应该是每个线程一个吗？推理线程池是每个线程的一个推理线程吗？模型检测的时候是怎么检测的呢？是每个线程的队列的一帧进入后，得到结果，那么下次怎么判断是当前视频流而不是另外的视频流呢？
+
+**解答**：
+
+1. **帧缓冲队列**：
+
+   - 不是每个线程一个队列，而是采用集中式的帧缓冲队列架构
+   - 多个视频流共享同一个帧缓冲队列
+   - 系统通过 `VideoCaptureManager` 统一管理所有视频流的帧
+   - 每个视频流通过唯一的 `video_id` 标识自己的帧
+2. **推理线程池**：
+
+   - 推理线程池是共享的，不是每个视频流一个
+   - 系统创建一个 `InferenceThread` 实例，负责所有视频流的GPU推理
+   - 不同视频流的帧都添加到同一个推理任务队列中
+   - 推理线程按照先来先服务的原则处理这些帧
+3. **视频流识别机制**：
+
+   - 每个视频流有唯一的 `video_id`
+   - 视频流通过 `capture_manager.get_latest_frame(video_id)` 获取自己的帧
+   - 当推理完成时，结果通过信号机制发回给对应的视频流处理逻辑
+   - 在 `MultiDetectorWorker` 中，每个实例对应一个视频流，确保检测结果正确对应
+
+## 9. 结论
 
 本实现成功优化了Jetson平台上的视频流处理，主要包括：
 
